@@ -34,14 +34,13 @@ export const name = 'magpie-bridge'
  */
 export const inject: readonly string[] = []
 
-/** 面板 RPC 的 HTTP 路径与通道名。 */
-export const PANEL_API_PATH = '/api/magpie-bridge'
-export const PANEL_ENDPOINT = 'magpie-bridge'
+/** 面板 RPC 通道（绝对路径；客户端 `connection.rpc.call` 会 POST `<channel>/<endpoint>`）。 */
+export const PANEL_CHANNEL = '/api/magpie-bridge'
 
-/** 面板方法结果信封。 */
+/** 面板方法结果信封（error.details 由连接层要求，宿主注册时补齐）。 */
 export type PanelResult =
   | { ok: true; value: unknown }
-  | { ok: false; error: { code: string; message: string } }
+  | { ok: false; error: { code: string; message: string; details?: object } }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -99,18 +98,17 @@ export function createPanelHandler(
   }
 }
 
-/** 失败结果补一个空 details，避免客户端错误渲染器抛 undefined。 */
-function reply(rpcId: string, result: PanelResult): Response {
-  const value =
-    result.ok === false ? { ...result, error: { ...result.error, details: {} } } : result
-  return Response.json({ type: 'server-response', rpcId, result: value })
+/** 失败结果补一个空 details（连接层要求 error.details 是对象）。 */
+function withDetails(result: PanelResult): PanelResult {
+  return result.ok === false ? { ...result, error: { ...result.error, details: {} } } : result
 }
 
 /**
- * 注册面板 RPC 端点（走 `connection.fetch`）。
+ * 注册面板 RPC 通道（走 `connection.rpc.handle`）。
  *
- * 协议与宿主面板通道一致：请求 `{ type:'client-request', rpcId, method, payload:{ method, ... } }`，
- * 响应 `{ type:'server-response', rpcId, result }`。
+ * 客户端调用 `connection.rpc.call('/api/magpie-bridge', 'web.url', payload)`，
+ * 连接层负责鉴权、rpcId 与响应信封；宿主只收 `(endpoint, payload)` 并返回
+ * `{ ok, value | error }`。
  */
 function registerPanelRpc(
   ctx: unknown,
@@ -118,59 +116,26 @@ function registerPanelRpc(
   logger: { debug(message: string): void; warn(message: string): void },
   getBridge: () => Promise<MagpieWebBridge>,
 ): void {
-  const fetchService = (
-    ctx as { connection?: { fetch?: { register?: (route: unknown) => unknown } } }
-  ).connection?.fetch
-  if (typeof fetchService?.register !== 'function') {
-    logger.debug('[magpie] connection.fetch 不可用，面板 RPC 未注册')
+  const rpc = (
+    ctx as {
+      connection?: {
+        rpc?: {
+          handle?: (channel: string, handler: (endpoint: string, payload: unknown) => Promise<PanelResult>) => unknown
+        }
+      }
+    }
+  ).connection?.rpc
+  if (typeof rpc?.handle !== 'function') {
+    logger.debug('[magpie] connection.rpc 不可用，面板 RPC 未注册')
     return
   }
 
   const handler = createPanelHandler(options, getBridge)
-
-  fetchService.register({
-    path: PANEL_API_PATH,
-    methods: ['POST'],
-    requestBody: 'buffered',
-    async fetch(request: Request): Promise<Response> {
-      if (request.method !== 'POST') {
-        return new Response('method not allowed', { status: 405 })
-      }
-      const contentType = request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
-      if (contentType !== 'application/json') {
-        return new Response('content type must be application/json', { status: 415 })
-      }
-      let message: Record<string, unknown>
-      try {
-        message = (await request.json()) as Record<string, unknown>
-      } catch {
-        return new Response('body is not JSON', { status: 400 })
-      }
-      const rpcId = typeof message['rpcId'] === 'string' ? message['rpcId'] : 'invalid-request'
-      const call = message['payload'] as Record<string, unknown> | undefined
-      if (
-        message['type'] !== 'client-request' ||
-        typeof message['rpcId'] !== 'string' ||
-        message['method'] !== PANEL_ENDPOINT ||
-        call === undefined ||
-        typeof call['method'] !== 'string'
-      ) {
-        return reply(rpcId, {
-          ok: false,
-          error: { code: 'magpie/bad-request', message: '非法的 Magpie 面板请求。' },
-        })
-      }
-      try {
-        return reply(rpcId, await handler(call['method']))
-      } catch (error) {
-        logger.warn(`[magpie] ${String(call['method'])} 失败：${messageOf(error)}`)
-        return reply(rpcId, {
-          ok: false,
-          error: { code: 'magpie/handler-failed', message: messageOf(error) },
-        })
-      }
-    },
-  })
+  try {
+    rpc.handle(PANEL_CHANNEL, async (endpoint: string) => withDetails(await handler(endpoint)))
+  } catch (error) {
+    logger.warn(`[magpie] 注册面板 RPC 失败：${messageOf(error)}`)
+  }
 }
 
 /** 插件激活入口。同步返回；所有 I/O 后台化。 */

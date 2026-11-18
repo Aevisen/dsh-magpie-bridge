@@ -27,4 +27,36 @@ describe('host entry', () => {
     expect(() => entry.apply(ctx, { autoStartGateway: false })).not.toThrow()
     expect(disposed).toBe(false)
   })
+
+  it('registers the panel channel through connection.rpc.handle', async () => {
+    let registered: { channel: string; handler: (endpoint: string) => Promise<unknown> } | undefined
+    const ctx = {
+      effect: () => () => {},
+      inject: (services: readonly string[], callback: (scoped: unknown) => void) => {
+        if (services.includes('connection')) {
+          callback({
+            connection: {
+              rpc: {
+                handle: (channel: string, handler: (endpoint: string) => Promise<unknown>) => {
+                  registered = { channel, handler }
+                },
+              },
+            },
+          })
+        }
+        return () => {}
+      },
+      logger: undefined,
+    }
+    entry.apply(ctx, { autoStartGateway: false, webEnabled: false })
+
+    expect(registered?.channel).toBe('/api/magpie-bridge')
+    const result = (await registered?.handler('web.url')) as {
+      ok: boolean
+      error?: { code: string; details: unknown }
+    }
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('magpie/web-disabled')
+    expect(result.error?.details).toEqual({})
+  })
 })
