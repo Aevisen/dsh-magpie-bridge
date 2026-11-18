@@ -473,7 +473,7 @@ async function startProxy(
           })
           upstreamResponse.once('end', () => {
             if (response.destroyed) return
-            let raw = Buffer.concat(chunks)
+            let raw: Buffer = Buffer.concat(chunks)
             const encoding = responseHeaders['content-encoding']
             const algorithm = typeof encoding === 'string' ? encoding.toLowerCase().trim() : ''
             let injectable = false
