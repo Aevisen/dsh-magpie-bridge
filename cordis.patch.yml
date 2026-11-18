@@ -1,0 +1,6 @@
+# Cordis 补丁：把本插件插入 profile 插件树。
+# `id` 是稳定锚点；`name` 必须与 package.json 的 name 逐字相同，
+# 否则宿主解析不到模块，启动时报 "plugin tree failed to load: 1 entry did not activate"。
+- insert:
+    - id: magpie-bridge
+      name: 'dsh-magpie-bridge'
