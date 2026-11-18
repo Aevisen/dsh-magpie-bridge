@@ -549,7 +549,7 @@ async function startProxy(
         for (const item of toHeaderList(value)) lines.push(`${name}: ${item}`)
       }
       socket.write(`${lines.join('\r\n')}\r\n\r\n`)
-      if (upstreamHead.length > 0) socket.write(upstreamHead as Buffer)
+      if (upstreamHead.length > 0) socket.write(Buffer.from(upstreamHead))
       upstreamSocket.pipe(socket)
       socket.pipe(upstreamSocket)
       upstreamSocket.once('error', () => socket.destroy())
