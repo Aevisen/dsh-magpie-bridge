@@ -1,7 +1,7 @@
 /**
  * 代理行为测试：请求体转发、CSP 剥离、HTML 桥接脚本注入。
  */
-import { createServer, type Server } from 'node:http'
+import { createServer, get, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -229,7 +229,27 @@ describe('proxy behavior', () => {
     const handle = await bridge.ensure()
     expect(handle.upstreamPort).toBe(upstreamPort)
     expect(handle.pid).toBeUndefined()
-    expect(await (await fetch(handle.url)).text()).toBe('configured upstream')
+    const desktopHeaders = {
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'iframe',
+    }
+    const navigate = (url: string | URL) => new Promise<{ status?: number; text: string }>((resolve, reject) => {
+      get(url, { headers: desktopHeaders }, async (response) => {
+        try {
+          let text = ''
+          for await (const chunk of response) text += chunk.toString()
+          resolve({ status: response.statusCode, text })
+        } catch (error) {
+          reject(error)
+        }
+      }).on('error', reject)
+    })
+    expect(await navigate(handle.url)).toEqual({ status: 200, text: 'configured upstream' })
+    expect((await navigate(new URL('/', handle.url))).status).toBe(403)
+    const api = new URL(handle.url)
+    api.pathname = '/api/state'
+    expect((await navigate(api)).status).toBe(403)
   })
 
 })

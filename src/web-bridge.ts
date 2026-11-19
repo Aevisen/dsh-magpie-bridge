@@ -17,6 +17,7 @@
  * 设计蓝本：Betsy20/dsh-magpie（MIT，见 NOTICE）。
  * @module dsh-magpie-bridge/web-bridge
  */
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
@@ -445,14 +446,29 @@ async function startProxy(
   listenHost: string,
   logger: { debug(message: string): void; warn(message: string): void },
   preferredPort: number,
+  frameToken: string,
 ): Promise<{ server: Server; port: number }> {
   const server = createHttpServer((request, response) => {
-    if (isCrossSite(request.headers)) {
+    const path = URL.parse('http://127.0.0.1' + (request.url ?? '/'))
+    if (!path) {
+      response.writeHead(400).end()
+      return
+    }
+    const presented = Buffer.from(path.searchParams.get('dshFrame') ?? '')
+    const expected = Buffer.from(frameToken)
+    const isAuthorizedFrame = request.method === 'GET' && path.pathname === '/'
+      && request.headers['sec-fetch-mode'] === 'navigate'
+      && ['iframe', 'frame'].includes(request.headers['sec-fetch-dest'] ?? '')
+      && presented.length === expected.length && timingSafeEqual(presented, expected)
+    if (isCrossSite(request.headers) && !isAuthorizedFrame) {
       response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
       response.end('拒绝跨站请求')
       request.resume()
       return
     }
+    const hasFrameToken = path.searchParams.has('dshFrame')
+    path.searchParams.delete('dshFrame')
+    const upstreamPath = hasFrameToken ? path.pathname + path.search : request.url ?? '/'
     const chunks: Buffer[] = []
     request.on('data', (chunk: Buffer) => {
       chunks.push(chunk)
@@ -490,7 +506,7 @@ async function startProxy(
       {
         host: target.host,
         port: target.port,
-        path: request.url ?? '/',
+        path: upstreamPath,
         method: request.method,
         headers,
       },
@@ -526,6 +542,7 @@ async function startProxy(
           typeof contentType === 'string' && contentType.toLowerCase().includes('text/html')
 
         if (isHtml) {
+          responseHeaders['referrer-policy'] = 'no-referrer'
           const chunks: Buffer[] = []
           upstreamResponse.on('data', (chunk: Buffer) => {
             chunks.push(chunk)
@@ -674,6 +691,7 @@ async function startProxy(
 
 /** `magpie serve --web` 子进程 + 常驻认证代理的管理器。 */
 export class MagpieWebBridge {
+  private readonly frameToken = randomBytes(32).toString('base64url')
   private handle: MagpieWebHandle | undefined
   private starting: Promise<MagpieWebHandle> | undefined
   private child: ChildProcess | undefined
@@ -866,6 +884,7 @@ export class MagpieWebBridge {
       '127.0.0.1',
       logger,
       this.options.proxyPort ?? DEFAULT_PROXY_PORT,
+      this.frameToken,
     )
       .then(({ server, port }) => {
         if (this.disposed) {
@@ -891,6 +910,12 @@ export class MagpieWebBridge {
     return this.proxyStarting
   }
 
+  private frameUrl(port: number): string {
+    const url = new URL(mainWindowUrl('127.0.0.1', port))
+    url.searchParams.set('dshFrame', this.frameToken)
+    return url.href
+  }
+
   /** 真正的启动流程：spawn → 等就绪 → 登录 → 接上代理。 */
   private async start(): Promise<MagpieWebHandle> {
     const { binary, host, key, logger, existingWebURL } = this.options
@@ -903,7 +928,7 @@ export class MagpieWebBridge {
       if (this.disposed) throw new Error('Web 桥已卸载')
       const upstreamPort = Number(url.port || 80)
       this.upstream = { host: connectHost(url.hostname), port: upstreamPort, cookie }
-      this.handle = { url: mainWindowUrl('127.0.0.1', port), port, upstreamPort, pid: undefined }
+      this.handle = { url: this.frameUrl(port), port, upstreamPort, pid: undefined }
       return this.handle
     }
 
@@ -1032,14 +1057,14 @@ export class MagpieWebBridge {
       this.upstream = { host: connectHost(webOrigin.hostname), port: upstreamPort, cookie }
 
       const handle: MagpieWebHandle = {
-        url: mainWindowUrl('127.0.0.1', proxyPort),
+        url: this.frameUrl(proxyPort),
         port: proxyPort,
         upstreamPort,
         pid: child.pid,
       }
       this.handle = handle
       this.markStable()
-      logger.debug(`[magpie] 代理就绪：${handle.url} → ${host}:${String(upstreamPort)}`)
+      logger.debug(`[magpie] 代理就绪：${mainWindowUrl('127.0.0.1', proxyPort)} → ${host}:${String(upstreamPort)}`)
 
       // 常驻 exit 监听：magpie 之后任何时刻退出都要清句柄并自动拉起
       // （自我更新 = 新进程起来 → 老进程退出；代理常驻，只换上游）。

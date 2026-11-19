@@ -19,7 +19,7 @@ import { persistedWebKey, resolveOptions, Config, type MagpieOptions } from './c
 import { describeSource, resolveMagpieBinary } from './binary.js'
 import { ensureMagpieBinary } from './download.js'
 import { registerMagpieTools } from './tools.js'
-import { dockWindowUrl, MagpieWebBridge } from './web-bridge.js'
+import { MagpieWebBridge } from './web-bridge.js'
 
 export { Config }
 
@@ -80,7 +80,9 @@ export function createPanelHandler(
           if (method === 'web.url') {
             return { ok: true, value: { url: handle.url, port: handle.port } }
           }
-          return { ok: true, value: { url: dockWindowUrl('127.0.0.1', handle.port) } }
+          const dockUrl = new URL(handle.url)
+          dockUrl.searchParams.set('mode', 'panel')
+          return { ok: true, value: { url: dockUrl.href } }
         } catch (error) {
           return {
             ok: false,
@@ -230,7 +232,7 @@ export function apply(ctx: unknown, config?: unknown): void {
         if (lifecycle.signal.aborted) return
         return bridge.ensure().then(
           (handle) => {
-            logger.debug(`[magpie] 网关已就绪：${options.baseURL}（Web UI 代理 ${handle.url}）`)
+            logger.debug(`[magpie] 网关已就绪：${options.baseURL}（Web UI 代理端口 ${handle.port}）`)
           },
           (error: unknown) => {
             logger.warn(
