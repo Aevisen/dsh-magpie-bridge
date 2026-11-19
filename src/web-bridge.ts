@@ -613,6 +613,16 @@ export class MagpieWebBridge {
     return this.starting
   }
 
+  /**
+   * 只起代理并接上给定上游（测试用）：不 spawn magpie 进程。
+   * @returns 代理实际监听的地址。
+   */
+  async attachProxy(upstream: { host: string; port: number; cookie: string }): Promise<{ port: number }> {
+    this.upstream = upstream
+    const { port } = await this.ensureProxy()
+    return { port }
+  }
+
   /** 停掉子进程与代理（同步、不抛错）。 */
   dispose(): void {
     this.disposed = true
