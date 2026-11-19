@@ -32,12 +32,10 @@ export const READY_PATTERN = /magpie web on (https?:\/\/\S+)/u
 /**
  * 从 magpie 输出里取出可连接的本机 Web 地址。
  *
- * 只匹配完整行；整段输出还没有任何换行时，最后一行也参与匹配，避免就绪行
- * 没有换行就被丢掉。通配监听地址改连回环。
+ * 平时只读完整行。输出短暂停顿后也检查最后一行，兼容无换行的就绪通知。
  */
-export function readyWebOrigin(buffered: string): URL | undefined {
-  const lineEnd = buffered.lastIndexOf('\n')
-  const searchable = lineEnd >= 0 ? buffered.slice(0, lineEnd + 1) : buffered
+export function readyWebOrigin(buffered: string, includeTrailing = true): URL | undefined {
+  const searchable = includeTrailing ? buffered : buffered.slice(0, buffered.lastIndexOf('\n') + 1)
   const match = READY_PATTERN.exec(searchable)
   if (match?.[1] === undefined) return undefined
   try {
@@ -956,9 +954,11 @@ export class MagpieWebBridge {
       const webOrigin = await new Promise<URL>((resolve, reject) => {
         let settled = false
         let buffered = ''
+        let trailingTimer: NodeJS.Timeout | undefined
 
         const cleanup = (): void => {
           clearTimeout(timer)
+          clearTimeout(trailingTimer)
           child.stdout?.off('data', onStdout)
           child.stderr?.off('data', onStderr)
           child.off('exit', onExit)
@@ -979,14 +979,17 @@ export class MagpieWebBridge {
         }
         const onStdout = (chunk: Buffer): void => {
           buffered += chunk.toString('utf8')
-          const origin = readyWebOrigin(buffered)
-          if (origin === undefined) {
-            if (buffered.length > 8_192) buffered = buffered.slice(-4_096)
+          clearTimeout(trailingTimer)
+          const origin = readyWebOrigin(buffered, false)
+          if (origin !== undefined) {
+            settle(() => resolve(origin))
             return
           }
-          settle(() => {
-            resolve(origin)
-          })
+          if (buffered.length > 8_192) buffered = buffered.slice(-4_096)
+          trailingTimer = setTimeout(() => {
+            const trailingOrigin = readyWebOrigin(buffered)
+            if (trailingOrigin !== undefined) settle(() => resolve(trailingOrigin))
+          }, 150)
         }
         const onStderr = (chunk: Buffer): void => {
           const text = chunk.toString('utf8').trim()

@@ -36,11 +36,11 @@ describe('window URLs', () => {
 
 describe('readyWebOrigin', () => {
   it('reads a ready line even when it has no trailing newline', () => {
-    expect(readyWebOrigin('magpie web on http://127.0.0.1:3480')?.origin).toBe('http://127.0.0.1:3480')
+    expect(readyWebOrigin('startup log\nmagpie web on http://127.0.0.1:3480')?.origin).toBe('http://127.0.0.1:3480')
   })
 
   it('ignores an unfinished URL after the last newline', () => {
-    expect(readyWebOrigin('noise\nmagpie web on http://127.0.0.1:34')).toBeUndefined()
+    expect(readyWebOrigin('noise\nmagpie web on http://127.0.0.1:34', false)).toBeUndefined()
   })
 
   it('maps a wildcard bind address to loopback', () => {
