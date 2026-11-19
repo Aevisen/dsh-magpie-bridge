@@ -34,8 +34,7 @@ export const name = 'magpie-bridge'
  */
 export const inject: readonly string[] = []
 
-/** 面板 RPC 通道（绝对路径；客户端 `connection.rpc.call` 会 POST `<channel>/<endpoint>`）。 */
-export const PANEL_CHANNEL = '/api/magpie-bridge'
+export const PANEL_CHANNEL = '/api'
 
 /** 面板方法结果信封（error.details 由连接层要求，宿主注册时补齐）。 */
 export type PanelResult =
@@ -103,38 +102,40 @@ function withDetails(result: PanelResult): PanelResult {
   return result.ok === false ? { ...result, error: { ...result.error, details: {} } } : result
 }
 
-/**
- * 注册面板 RPC 通道（走 `connection.rpc.handle`）。
- *
- * 客户端调用 `connection.rpc.call('/api/magpie-bridge', 'web.url', payload)`，
- * 连接层负责鉴权、rpcId 与响应信封；宿主只收 `(endpoint, payload)` 并返回
- * `{ ok, value | error }`。
- */
+/** Register exact routes on the authenticated, owner-only Connection carrier. */
 function registerPanelRpc(
   ctx: unknown,
   options: MagpieOptions,
   logger: { debug(message: string): void; warn(message: string): void },
   getBridge: () => Promise<MagpieWebBridge>,
 ): void {
-  const rpc = (
-    ctx as {
-      connection?: {
-        rpc?: {
-          handle?: (channel: string, handler: (endpoint: string, payload: unknown) => Promise<PanelResult>) => unknown
-        }
-      }
-    }
-  ).connection?.rpc
-  if (typeof rpc?.handle !== 'function') {
-    logger.debug('[magpie] connection.rpc 不可用，面板 RPC 未注册')
+  const connection = (ctx as { connection?: { fetch?: { register(route: {
+    path: string
+    methods: readonly ['POST']
+    requestBody: 'buffered'
+    fetch(request: Request): Promise<Response>
+  }): unknown } } }).connection
+  const carrier = connection?.fetch
+  if (!carrier) {
+    logger.warn('[magpie] connection.fetch 不可用，面板 RPC 未注册')
     return
   }
 
   const handler = createPanelHandler(options, getBridge)
-  try {
-    rpc.handle(PANEL_CHANNEL, async (endpoint: string) => withDetails(await handler(endpoint)))
-  } catch (error) {
-    logger.warn(`[magpie] 注册面板 RPC 失败：${messageOf(error)}`)
+  for (const method of ['web.url', 'web.dockUrl']) {
+    const endpoint = `magpie-bridge/${method}`
+    carrier.register({
+      path: `${PANEL_CHANNEL}/${endpoint}`,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      async fetch(request) {
+        const call = await request.json().catch(() => null) as { type?: unknown; rpcId?: unknown; method?: unknown } | null
+        if (call?.type !== 'client-request' || typeof call.rpcId !== 'string' || call.method !== endpoint) {
+          return new Response('Invalid RPC request', { status: 400 })
+        }
+        return Response.json({ type: 'server-response', rpcId: call.rpcId, result: withDetails(await handler(method)) })
+      },
+    })
   }
 }
 

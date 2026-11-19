@@ -2,13 +2,13 @@
  * 面板 RPC 客户端：走宿主连接层的通用 RPC 通道。
  *
  * `connection.rpc.call(channel, endpoint, payload)` 由宿主
- * `connection.rpc.handle(channel, handler)` 接手；连接层负责鉴权、rpcId
+ * 宿主的精确 Fetch 路由接手；连接层负责鉴权、rpcId
  * 与响应信封，这里只做一次解包。
  * @module dsh-magpie-bridge/client/rpc
  */
 
 /** 宿主注册的通道（绝对路径）。 */
-export const PANEL_CHANNEL = '/api/magpie-bridge'
+export const PANEL_CHANNEL = '/api'
 
 /**
  * 解开连接层的结果信封。
@@ -36,6 +36,6 @@ export async function callMagpieRpc(connection, method, payload, signal) {
   if (!connection || !connection.rpc || typeof connection.rpc.call !== 'function') {
     throw new Error('connection.rpc 不可用')
   }
-  const result = await connection.rpc.call(PANEL_CHANNEL, method, payload ?? {}, signal)
+  const result = await connection.rpc.call(PANEL_CHANNEL, `magpie-bridge/${method}`, payload ?? {}, signal)
   return unwrapRpcResult(result)
 }

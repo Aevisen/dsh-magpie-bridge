@@ -47,35 +47,32 @@ describe('host entry', () => {
     expect([...registered].sort()).toEqual(['magpie', 'magpie_quota'])
   })
 
-  it('registers the panel channel through connection.rpc.handle', async () => {
-    let registered: { channel: string; handler: (endpoint: string) => Promise<unknown> } | undefined
-    const ctx = {
+  it('serves both panel RPC methods through exact authenticated carrier routes', async () => {
+    const routes = new Map<string, (request: Request) => Promise<Response>>()
+    entry.apply({
       effect: () => () => {},
-      inject: (services: readonly string[], callback: (scoped: unknown) => void) => {
-        if (services.includes('connection')) {
-          callback({
-            connection: {
-              rpc: {
-                handle: (channel: string, handler: (endpoint: string) => Promise<unknown>) => {
-                  registered = { channel, handler }
-                },
-              },
-            },
-          })
-        }
-        return () => {}
+      inject(services: readonly string[], callback: (scoped: unknown) => void) {
+        if (!services.includes('connection')) return
+        callback({ connection: { fetch: { register(route: {
+          path: string
+          fetch(request: Request): Promise<Response>
+        }) { routes.set(route.path, route.fetch) } } } })
       },
-      logger: undefined,
-    }
-    entry.apply(ctx, { autoStartGateway: false, webEnabled: false })
+    }, { autoStartGateway: false, webEnabled: false })
 
-    expect(registered?.channel).toBe('/api/magpie-bridge')
-    const result = (await registered?.handler('web.url')) as {
-      ok: boolean
-      error?: { code: string; details: unknown }
+    for (const method of ['web.url', 'web.dockUrl']) {
+      const endpoint = `magpie-bridge/${method}`
+      const path = `/api/${endpoint}`
+      const fetchRoute = routes.get(path)
+      expect(fetchRoute).toBeDefined()
+      const response = await fetchRoute!(new Request(`http://localhost${path}`, {
+        method: 'POST',
+        body: JSON.stringify({ type: 'client-request', rpcId: 'test', method: endpoint, payload: {} }),
+      }))
+      expect(await response.json()).toMatchObject({
+        type: 'server-response', rpcId: 'test',
+        result: { ok: false, error: { code: 'magpie/web-disabled', details: {} } },
+      })
     }
-    expect(result.ok).toBe(false)
-    expect(result.error?.code).toBe('magpie/web-disabled')
-    expect(result.error?.details).toEqual({})
   })
 })
