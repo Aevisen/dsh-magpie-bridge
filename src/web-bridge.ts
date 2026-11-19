@@ -407,31 +407,47 @@ async function listenOnce(server: Server, port: number, host: string): Promise<v
 /** 起常驻代理：请求注入 cookie 转发给上游；上游为空时回 503 自恢复页。 */
 async function startProxy(
   getUpstream: () => ProxyUpstream | undefined,
+  /** 登录 cookie 被拒时重新登录；返回是否拿到了新 cookie。 */
+  refresh: () => Promise<boolean>,
   listenHost: string,
   logger: { debug(message: string): void; warn(message: string): void },
   preferredPort: number,
 ): Promise<{ server: Server; port: number }> {
   const server = createHttpServer((request, response) => {
-    const target = getUpstream()
-    if (target === undefined) {
-      response.writeHead(503, {
-        'content-type': 'text/html; charset=utf-8',
-        'cache-control': 'no-store',
-        'retry-after': '1',
-      })
-      response.end(RESTARTING_PAGE)
-      return
-    }
+    const chunks: Buffer[] = []
+    request.on('data', (chunk: Buffer) => {
+      chunks.push(chunk)
+    })
+    request.on('error', () => {
+      if (!response.destroyed) response.destroy()
+    })
+    request.on('end', () => {
+      sendUpstream(Buffer.concat(chunks), true)
+    })
 
-    const headers: Record<string, string | string[]> = {}
-    for (const [name, value] of Object.entries(request.headers)) {
-      if (value === undefined || DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) continue
-      headers[name] = value
-    }
-    headers['host'] = `${target.host}:${String(target.port)}`
-    headers['cookie'] = target.cookie
+    // 缓冲后转发：登录 cookie 失效（401）时重新登录并重放一次。
+    const sendUpstream = (body: Buffer, allowRetry: boolean): void => {
+      const target = getUpstream()
+      if (target === undefined) {
+        response.writeHead(503, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'retry-after': '1',
+        })
+        response.end(RESTARTING_PAGE)
+        return
+      }
 
-    const upstream = httpRequest(
+      const headers: Record<string, string | string[]> = {}
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value === undefined || DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) continue
+        headers[name] = value
+      }
+      headers['host'] = `${target.host}:${String(target.port)}`
+      headers['cookie'] = target.cookie
+      headers['content-length'] = String(body.length)
+
+      const upstream = httpRequest(
       {
         host: target.host,
         port: target.port,
@@ -440,6 +456,20 @@ async function startProxy(
         headers,
       },
       (upstreamResponse) => {
+        // cookie 被拒：重新登录后重放这一次请求（只重试一次）。
+        if (upstreamResponse.statusCode === 401 && allowRetry) {
+          upstreamResponse.resume()
+          void refresh().then((ok) => {
+            if (response.destroyed) return
+            if (ok) sendUpstream(body, false)
+            else {
+              response.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
+              response.end('magpie web 登录已失效，请重开面板')
+            }
+          })
+          return
+        }
+
         const responseHeaders: Record<string, string | string[]> = {}
         for (const [name, value] of Object.entries(upstreamResponse.headers)) {
           if (value === undefined || DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
@@ -511,8 +541,9 @@ async function startProxy(
         response.end('magpie web 无响应')
       }
     })
-    // 转发请求体（POST/PUT 等）；GET 时没有 body，pipe 立即 end。
-    request.pipe(upstream)
+    // 转发缓冲好的请求体（GET 时为空）。
+    upstream.end(body)
+    }
   })
 
   // WebSocket 升级：手工拼 101 响应行后双向 pipe（magpie 的实时通道）。
@@ -723,6 +754,26 @@ export class MagpieWebBridge {
     }
   }
 
+  /** 用当前 key 重新登录上游，刷新代理注入的 cookie。失败返回 false。 */
+  private async refreshLogin(): Promise<boolean> {
+    const current = this.upstream
+    if (current === undefined) return false
+    try {
+      const cookie = await login(
+        `http://${urlHost(current.host)}:${String(current.port)}`,
+        this.options.key,
+        10_000,
+      )
+      this.upstream = { host: current.host, port: current.port, cookie }
+      return true
+    } catch (error) {
+      this.options.logger.warn(
+        `[magpie] 重新登录失败：${error instanceof Error ? error.message : String(error)}`,
+      )
+      return false
+    }
+  }
+
   /** 确保代理在跑（整个桥生命周期只 listen 一次）。 */
   private async ensureProxy(): Promise<{ server: Server; port: number }> {
     if (this.proxy !== undefined && this.proxyPort !== undefined) {
@@ -733,6 +784,7 @@ export class MagpieWebBridge {
     const logger = this.options.logger
     this.proxyStarting = startProxy(
       () => this.upstream,
+      () => this.refreshLogin(),
       '127.0.0.1',
       logger,
       this.options.proxyPort ?? DEFAULT_PROXY_PORT,

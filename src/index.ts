@@ -15,7 +15,7 @@
  *
  * @module dsh-magpie-bridge
  */
-import { resolveOptions, Config, type MagpieOptions } from './config.js'
+import { persistedWebKey, resolveOptions, Config, type MagpieOptions } from './config.js'
 import { describeSource, resolveMagpieBinary } from './binary.js'
 import { ensureMagpieBinary } from './download.js'
 import { registerMagpieTools } from './tools.js'
@@ -141,6 +141,11 @@ function registerPanelRpc(
 /** 插件激活入口。同步返回；所有 I/O 后台化。 */
 export function apply(ctx: unknown, config?: unknown): void {
   const options = resolveOptions(config)
+  // 没有显式配置 webKey 时复用持久化的 key：每次启动都随机生成会让
+  // magpie web 的登录 cookie 失效，面板停在「密钥已变」的登录页。
+  const raw = (config ?? {}) as { webKey?: unknown }
+  const explicit = typeof raw.webKey === 'string' && raw.webKey.trim() !== ''
+  if (!explicit) options.webKey = persistedWebKey(options.webKey)
   const logger = makeLogger(ctx)
   const context = ctx as {
     effect?: (disposer: () => void) => unknown

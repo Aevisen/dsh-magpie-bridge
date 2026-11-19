@@ -35,7 +35,7 @@
 | `webHost` | `127.0.0.1` | Web UI 监听地址 |
 | `webPort` | `3480` | Web UI 首选端口（占用时向后找） |
 | `proxyPort` | `3591` | 认证代理端口（iframe 直接加载；占用时向后找） |
-| `webKey` | 空则自动生成 | `MAGPIE_WEB_KEY`，16+ 位 `[A-Za-z0-9._~-]` |
+| `webKey` | 空则自动生成并记住 | `MAGPIE_WEB_KEY`，16+ 位。留空时写入 `~/.dsh/magpie/web-key`，重启沿用，避免面板停在「密钥已变」的登录页 |
 | `autoStartGateway` | `true` | 插件加载时后台起 `magpie serve --web` |
 | `autoDownloadMagpie` | `true` | 找不到二进制时自动下载 |
 | `magpieBinary` | `magpie` | 可执行文件路径（绝对路径优先） |

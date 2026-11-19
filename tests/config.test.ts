@@ -1,6 +1,10 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import { generateWebKey, isValidWebKey, resolveOptions } from '../src/config.js'
+import { generateWebKey, isValidWebKey, persistedWebKey, resolveOptions } from '../src/config.js'
 
 describe('resolveOptions', () => {
   it('returns all defaults when config is undefined', () => {
@@ -32,6 +36,35 @@ describe('resolveOptions', () => {
 
   it('rejects a non-empty invalid webKey', () => {
     expect(() => resolveOptions({ webKey: 'too-short' })).toThrow(/WEB_KEY/i)
+  })
+})
+
+describe('persistedWebKey', () => {
+  it('reuses the key written on the first call', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'magpie-key-'))
+    const file = join(dir, 'web-key')
+    try {
+      const first = persistedWebKey('a'.repeat(24), file)
+      expect(first).toBe('a'.repeat(24))
+      expect((await readFile(file, 'utf8')).trim()).toBe(first)
+      expect(persistedWebKey('b'.repeat(24), file)).toBe(first)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces a stored key that is no longer valid', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'magpie-key-'))
+    const file = join(dir, 'web-key')
+    try {
+      const { writeFile, mkdir } = await import('node:fs/promises')
+      await mkdir(dir, { recursive: true })
+      await writeFile(file, 'too-short\n')
+      const fresh = 'c'.repeat(24)
+      expect(persistedWebKey(fresh, file)).toBe(fresh)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
 

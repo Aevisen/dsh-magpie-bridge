@@ -3,6 +3,9 @@
  * @module dsh-magpie-bridge/config
  */
 import { randomBytes } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 
 import Schema from '@deepseek-ai/schemastery'
 
@@ -52,6 +55,31 @@ const WEB_KEY_PATTERN = /^[A-Za-z0-9._~-]{16,}$/u
 /** MAGPIE_WEB_KEY 合法性：16 位以上且只含字母、数字、`- . _ ~`。 */
 export function isValidWebKey(key: string): boolean {
   return typeof key === 'string' && WEB_KEY_PATTERN.test(key)
+}
+
+/** webKey 的持久化位置（跨启动稳定，避免 magpie web 的登录 cookie 每次失效）。 */
+export function webKeyFile(): string {
+  return join(homedir(), '.dsh', 'magpie', 'web-key')
+}
+
+/**
+ * 没有显式配置 webKey 时，复用上次持久化的那个；没有就写入这次生成的。
+ * 读写失败时退回 `generated`（功能不受影响，只是重启后 key 会变）。
+ */
+export function persistedWebKey(generated: string, file: string = webKeyFile()): string {
+  try {
+    const existing = readFileSync(file, 'utf8').trim()
+    if (isValidWebKey(existing)) return existing
+  } catch {
+    /* 还没有这个文件 */
+  }
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, `${generated}\n`, { mode: 0o600 })
+  } catch {
+    /* 写不了就只用这次的 */
+  }
+  return generated
 }
 
 /** 生成 24 位随机 webKey（base64url，字符集天然落在合法集合内）。 */

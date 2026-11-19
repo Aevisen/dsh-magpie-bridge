@@ -72,4 +72,49 @@ describe('proxy behavior', () => {
     expect(html).toContain('dsh-magpie')
     expect(html).toContain('</body>')
   })
+
+  it('re-logs-in and retries once when the upstream rejects the cookie', async () => {
+    let seenCookie = ''
+    let hits = 0
+    const upstream = createServer((request, response) => {
+      const url = request.url ?? '/'
+      request.resume()
+      if (url.startsWith('/?k=')) {
+        response.writeHead(303, { 'set-cookie': 'magpie_web_x=fresh; Path=/' })
+        response.end()
+        return
+      }
+      hits += 1
+      if (hits === 1) {
+        response.writeHead(401, { 'content-type': 'text/plain' })
+        response.end('key mismatch')
+        return
+      }
+      seenCookie = request.headers['cookie'] ?? ''
+      response.writeHead(200, { 'content-type': 'text/html' })
+      response.end('<html><body>ok</body></html>')
+    })
+    servers.push(upstream)
+    const upstreamPort = await listen(upstream)
+
+    const bridge = new MagpieWebBridge({
+      binary: undefined,
+      key: 'k'.repeat(20),
+      host: '127.0.0.1',
+      preferredPort: 3480,
+      proxyPort: 45992,
+      logger,
+    })
+    bridges.push(bridge)
+    const proxy = await bridge.attachProxy({
+      host: '127.0.0.1',
+      port: upstreamPort,
+      cookie: 'magpie_web_x=stale',
+    })
+
+    const response = await fetch(`http://127.0.0.1:${String(proxy.port)}/`)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('ok')
+    expect(seenCookie).toBe('magpie_web_x=fresh')
+  })
 })
