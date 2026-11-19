@@ -242,6 +242,12 @@ export function apply(ctx: unknown, config?: unknown): void {
     registerMagpieTools(context, { options, resolveBinary: resolveBinaryPath })
   }
 
+  // 工具层只在有 tools 服务的 profile 里注册；用运行时 inject 而非静态 inject，
+  // 直接读 `ctx.tools` 会让没有 tools 的 profile 报 "cannot get property without inject"。
+  context.inject?.(['tools'], (toolsCtx: unknown) => {
+    registerMagpieTools(toolsCtx, { options, resolveBinary: resolveBinaryPath })
+  })
+
   // 面板通道只在有 connection 的 profile 里注册（Web profile）。
   context.inject?.(['connection'], (connectionCtx: unknown) => {
     registerPanelRpc(connectionCtx, options, logger, getBridge)

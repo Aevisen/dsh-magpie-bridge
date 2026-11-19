@@ -15,17 +15,36 @@ describe('host entry', () => {
   })
 
   it('applies synchronously without connection or tools services', () => {
-    let disposed = false
     const ctx = {
-      effect: (disposer: () => void) => {
-        void disposer
-        return () => {}
-      },
+      effect: () => () => {},
       inject: () => {},
       logger: undefined,
     }
     expect(() => entry.apply(ctx, { autoStartGateway: false })).not.toThrow()
-    expect(disposed).toBe(false)
+  })
+
+  it('registers tools through the tools inject scope', () => {
+    const registered: string[] = []
+    const ctx = {
+      effect: () => () => {},
+      inject: (services: readonly string[], callback: (scoped: unknown) => void) => {
+        if (services.includes('tools')) {
+          callback({
+            tools: {
+              register: (definition: { name: string }) => {
+                registered.push(definition.name)
+                return () => {}
+              },
+            },
+            on: () => () => {},
+          })
+        }
+        return () => {}
+      },
+      logger: undefined,
+    }
+    entry.apply(ctx, { autoStartGateway: false })
+    expect([...registered].sort()).toEqual(['magpie', 'magpie_quota'])
   })
 
   it('registers the panel channel through connection.rpc.handle', async () => {
