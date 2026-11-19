@@ -33,6 +33,7 @@
 | `baseURL` | `http://127.0.0.1:3425` | 网关根地址，仅用于日志诊断 |
 | `webEnabled` | `true` | 是否嵌入原版 Web UI |
 | `webHost` | `127.0.0.1` | Web UI 监听地址 |
+| `webURL` | 空 | 现有 Magpie Web 服务的本机 HTTP 根地址。填写后由插件连接该服务，需同时填写对应的 `webKey` |
 | `webPort` | `3480` | Web UI 首选端口（占用时向后找） |
 | `proxyPort` | `3591` | 认证代理端口（iframe 直接加载；占用时向后找） |
 | `webKey` | 空则自动生成并记住 | `MAGPIE_WEB_KEY`，16+ 位。留空时写入 `~/.dsh/magpie/web-key`，重启沿用，避免面板停在「密钥已变」的登录页 |
@@ -42,7 +43,9 @@
 | `toolOutputLimit` | `20000` | CLI 工具输出上限（字符） |
 | `toolTimeoutMs` | `120000` | CLI 工具超时（毫秒） |
 
-网关跑在另一台机器上：
+连接已经运行的 Magpie Web 时，在 `magpie-bridge` 插件配置里填写 `webURL`（例如 `http://127.0.0.1:3430`）和该实例的 `webKey`。地址填到端口为止，启动链接中的 `k=` 参数单独填入 `webKey`。留空 `webURL` 时，插件使用 `webPort` 作为托管模式的首选端口，并采用子进程实际报告的地址。
+
+仅调整网关诊断地址时可使用以下配置。`baseURL` 不决定面板的上游地址。
 
 ```yaml
 - id: magpie-bridge

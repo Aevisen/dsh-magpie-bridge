@@ -17,6 +17,7 @@ export interface MagpieOptions {
   webEnabled: boolean
   /** Web UI 监听地址。 */
   webHost: string
+  webURL: string
   /** Web UI 首选端口（被占用时向后找）。 */
   webPort: number
   /** 认证代理端口（固定，iframe 直接加载）。 */
@@ -40,9 +41,10 @@ export const Config = Schema.object({
   baseURL: Schema.string().default('http://127.0.0.1:3425'),
   webEnabled: Schema.boolean().default(true),
   webHost: Schema.string().default('127.0.0.1'),
+  webURL: Schema.string().default('').description('Existing local Magpie Web URL, for example http://127.0.0.1:3430. Requires webKey.'),
   webPort: Schema.number().default(3480),
   proxyPort: Schema.number().default(3591),
-  webKey: Schema.string().default(''),
+  webKey: Schema.string().default('').role('secret'),
   autoStartGateway: Schema.boolean().default(true),
   autoDownloadMagpie: Schema.boolean().default(true),
   magpieBinary: Schema.string().default('magpie'),
@@ -97,10 +99,26 @@ export function generateWebKey(): string {
 export function resolveOptions(config: unknown): MagpieOptions {
   const parsed = (config == null ? new Config() : Config(config)) as Record<string, unknown>
   const webKey = typeof parsed['webKey'] === 'string' ? parsed['webKey'] : ''
+  if (typeof parsed.webURL === 'string' && parsed.webURL.trim()) {
+    parsed.webURL = parseWebOrigin(parsed.webURL).origin
+    if (!webKey) throw new Error('配置 webURL 时需要填写该 Magpie Web 服务的 webKey')
+  }
   if (webKey === '') {
     parsed['webKey'] = generateWebKey()
   } else if (!isValidWebKey(webKey)) {
     throw new Error('MAGPIE_WEB_KEY 不合法：需要 16 位以上，且只含字母、数字、- . _ ~')
   }
   return parsed as unknown as MagpieOptions
+}
+
+/** Accept only a local HTTP Web listener, with credentials supplied separately. */
+export function parseWebOrigin(input: string): URL {
+  const url = URL.parse(input.trim())
+  const host = url?.hostname
+  const local = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
+  if (!url || url.protocol !== 'http:' || !local
+      || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('webURL 必须是本机 Magpie Web 的 HTTP 根地址，密钥请单独填入 webKey')
+  }
+  return url
 }

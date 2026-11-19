@@ -112,9 +112,124 @@ describe('proxy behavior', () => {
       cookie: 'magpie_web_x=stale',
     })
 
-    const response = await fetch(`http://127.0.0.1:${String(proxy.port)}/`)
+    const response = await fetch(`http://127.0.0.1:${String(proxy.port)}/`, { headers: { accept: 'text/html' } })
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('ok')
     expect(seenCookie).toBe('magpie_web_x=fresh')
   })
+
+  it('explains a rejected Web key in Chinese without relaying the upstream form', async () => {
+    const upstream = createServer((_request, response) => {
+      response.writeHead(401, { 'content-type': 'text/html' }).end('<form>Paste the key</form>')
+    })
+    servers.push(upstream)
+    const upstreamPort = await listen(upstream)
+    const bridge = new MagpieWebBridge({
+      binary: undefined,
+      existingWebURL: `http://127.0.0.1:${upstreamPort}`,
+      key: 'w'.repeat(24),
+      host: '127.0.0.1',
+      preferredPort: 3480,
+      proxyPort: 45994,
+      logger,
+    })
+    bridges.push(bridge)
+    await expect(bridge.ensure()).rejects.toThrow(/启动链接.*webKey/)
+    const proxy = await bridge.attachProxy({ host: '127.0.0.1', port: upstreamPort, cookie: 'stale=1' })
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/`, { headers: { accept: 'text/html' } })
+    expect(response.status).toBe(401)
+    const page = await response.text()
+    expect(page).toContain('启动链接')
+    expect(page).toContain('webKey')
+    expect(page).not.toContain('<form>')
+  })
+
+  it('refuses a cross-site browser request before it reaches Magpie', async () => {
+    let reached = false
+    const upstream = createServer((_request, response) => {
+      reached = true
+      response.end('secret')
+    })
+    servers.push(upstream)
+    const upstreamPort = await listen(upstream)
+    const bridge = new MagpieWebBridge({
+      binary: undefined,
+      key: 'w'.repeat(24),
+      host: '127.0.0.1',
+      preferredPort: 3480,
+      proxyPort: 45995,
+      logger,
+    })
+    bridges.push(bridge)
+    const proxy = await bridge.attachProxy({ host: '127.0.0.1', port: upstreamPort, cookie: 'session=secret' })
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/`, {
+      headers: { 'sec-fetch-site': 'cross-site', accept: 'text/html' },
+    })
+    expect(response.status).toBe(403)
+    expect(reached).toBe(false)
+  })
+
+  it('logs in again after the configured upstream stops and returns', async () => {
+    const key = 'w'.repeat(24)
+    const handler = (request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => {
+      if (request.url === `/?k=${key}`) {
+        response.writeHead(303, { 'set-cookie': 'magpie_web_test=connected; Path=/' }).end()
+      } else if (request.headers.cookie === 'magpie_web_test=connected') {
+        response.end('configured upstream')
+      } else {
+        response.writeHead(401).end()
+      }
+    }
+    const upstream = createServer(handler)
+    servers.push(upstream)
+    const upstreamPort = await listen(upstream)
+    const bridge = new MagpieWebBridge({
+      binary: undefined,
+      existingWebURL: `http://127.0.0.1:${upstreamPort}`,
+      key,
+      host: '127.0.0.1',
+      preferredPort: 3480,
+      proxyPort: 45996,
+      logger,
+    })
+    bridges.push(bridge)
+    await bridge.ensure()
+    await new Promise<void>((resolve) => upstream.close(() => resolve()))
+    await expect(bridge.ensure()).rejects.toThrow()
+    const restored = createServer(handler)
+    servers.push(restored)
+    await new Promise<void>((resolve) => restored.listen(upstreamPort, '127.0.0.1', () => resolve()))
+    const handle = await bridge.ensure()
+    expect(await (await fetch(handle.url, { headers: { accept: 'text/html' } })).text()).toBe('configured upstream')
+  })
+
+  it('connects to the configured local Web listener without a Magpie binary', async () => {
+    const key = 'w'.repeat(24)
+    const upstream = createServer((request, response) => {
+      if (request.url === `/?k=${key}`) {
+        response.writeHead(303, { 'set-cookie': 'magpie_web_test=connected; Path=/' }).end()
+      } else if (request.headers.cookie === 'magpie_web_test=connected') {
+        response.end('configured upstream')
+      } else {
+        response.writeHead(401).end()
+      }
+    })
+    servers.push(upstream)
+    const upstreamPort = await listen(upstream)
+    const bridge = new MagpieWebBridge({
+      binary: undefined,
+      existingWebURL: `http://127.0.0.1:${upstreamPort}`,
+      key,
+      host: '127.0.0.1',
+      preferredPort: 3480,
+      proxyPort: 45993,
+      logger,
+    })
+    bridges.push(bridge)
+    const handle = await bridge.ensure()
+    expect(handle.upstreamPort).toBe(upstreamPort)
+    expect(handle.pid).toBeUndefined()
+    expect(await (await fetch(handle.url)).text()).toBe('configured upstream')
+  })
+
 })

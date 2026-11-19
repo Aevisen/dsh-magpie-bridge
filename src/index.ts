@@ -81,7 +81,7 @@ export function createPanelHandler(
           if (method === 'web.url') {
             return { ok: true, value: { url: handle.url, port: handle.port } }
           }
-          return { ok: true, value: { url: dockWindowUrl(options.webHost, handle.port) } }
+          return { ok: true, value: { url: dockWindowUrl('127.0.0.1', handle.port) } }
         } catch (error) {
           return {
             ok: false,
@@ -190,7 +190,7 @@ export function apply(ctx: unknown, config?: unknown): void {
     if (bridgePromise !== undefined) return bridgePromise
     bridgePromise = (async () => {
       assertAlive()
-      const binary = await resolveBinaryPath()
+      const binary = options.webURL ? undefined : await resolveBinaryPath()
       assertAlive()
       const bridge = new MagpieWebBridge({
         binary,
@@ -199,6 +199,7 @@ export function apply(ctx: unknown, config?: unknown): void {
         preferredPort: options.webPort,
         proxyPort: options.proxyPort,
         gatewayURL: options.baseURL,
+        existingWebURL: options.webURL || undefined,
         logger,
       })
       bridgeInstance = bridge
@@ -222,7 +223,7 @@ export function apply(ctx: unknown, config?: unknown): void {
 
   // 自动拉起网关：插件提供的是模型，不只是面板——用户第一件事往往是发消息。
   // 后台跑，失败只 warn（网关跑在别处时不应让插件失效）。
-  if (options.autoStartGateway) {
+  if (options.autoStartGateway && !options.webURL) {
     void getBridge().then(
       (bridge) => {
         if (lifecycle.signal.aborted) return

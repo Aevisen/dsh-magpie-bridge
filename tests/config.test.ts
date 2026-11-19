@@ -21,6 +21,14 @@ describe('resolveOptions', () => {
     expect(options.toolTimeoutMs).toBe(120000)
   })
 
+  it('accepts a local Web URL with an explicit key and rejects embedded credentials', () => {
+    const webKey = 'w'.repeat(24)
+    expect(resolveOptions({ webURL: 'http://127.0.0.1:3430/', webKey }).webURL).toBe('http://127.0.0.1:3430')
+    expect(() => resolveOptions({ webURL: 'http://127.0.0.1:3430' })).toThrow(/webKey/)
+    expect(() => resolveOptions({ webURL: 'http://127.0.0.1:3430/?k=secret', webKey })).toThrow(/webURL/)
+    expect(() => resolveOptions({ webURL: 'http://192.168.1.10:3430', webKey })).toThrow(/webURL/)
+  })
+
   it('overrides only the given fields', () => {
     const options = resolveOptions({ webPort: 4000 })
     expect(options.webPort).toBe(4000)

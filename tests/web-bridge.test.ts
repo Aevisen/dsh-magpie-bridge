@@ -7,6 +7,7 @@ import {
   dockWindowUrl,
   findFreePort,
   mainWindowUrl,
+  readyWebOrigin,
   restartDelay,
 } from '../src/web-bridge.js'
 
@@ -30,6 +31,21 @@ describe('window URLs', () => {
 
   it('appends the panel mode for the dock window', () => {
     expect(dockWindowUrl('127.0.0.1', 5)).toBe('http://127.0.0.1:5/?mode=panel')
+  })
+})
+
+describe('readyWebOrigin', () => {
+  it('reads a ready line even when it has no trailing newline', () => {
+    expect(readyWebOrigin('magpie web on http://127.0.0.1:3480')?.origin).toBe('http://127.0.0.1:3480')
+  })
+
+  it('ignores an unfinished URL after the last newline', () => {
+    expect(readyWebOrigin('noise\nmagpie web on http://127.0.0.1:34')).toBeUndefined()
+  })
+
+  it('maps a wildcard bind address to loopback', () => {
+    expect(readyWebOrigin('magpie web on http://0.0.0.0:3480\n')?.origin).toBe('http://127.0.0.1:3480')
+    expect(readyWebOrigin('magpie web on http://[::]:3480\n')?.origin).toBe('http://[::1]:3480')
   })
 })
 

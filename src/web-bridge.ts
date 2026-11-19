@@ -23,10 +23,32 @@ import { createServer as createNetServer } from 'node:net'
 import { join } from 'node:path'
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib'
 
+import { parseWebOrigin } from './config.js'
 import { probeGateway } from './gateway.js'
 
 /** stdout 里启动完成的标志行。 */
 export const READY_PATTERN = /magpie web on (https?:\/\/\S+)/u
+
+/**
+ * 从 magpie 输出里取出可连接的本机 Web 地址。
+ *
+ * 只匹配完整行；整段输出还没有任何换行时，最后一行也参与匹配，避免就绪行
+ * 没有换行就被丢掉。通配监听地址改连回环。
+ */
+export function readyWebOrigin(buffered: string): URL | undefined {
+  const lineEnd = buffered.lastIndexOf('\n')
+  const searchable = lineEnd >= 0 ? buffered.slice(0, lineEnd + 1) : buffered
+  const match = READY_PATTERN.exec(searchable)
+  if (match?.[1] === undefined) return undefined
+  try {
+    const announced = new URL(match[1])
+    if (announced.hostname === '0.0.0.0') announced.hostname = '127.0.0.1'
+    if (announced.hostname === '::' || announced.hostname === '[::]') announced.hostname = '[::1]'
+    return parseWebOrigin(announced.origin)
+  } catch {
+    return undefined
+  }
+}
 
 /** 启动超时（magpie 首次要加载插件，30s 是宽松上界）。 */
 export const DEFAULT_STARTUP_TIMEOUT_MS = 30_000
@@ -97,6 +119,7 @@ export interface MagpieWebBridgeOptions {
   readonly startupTimeoutMs?: number
   /** 网关根地址，仅用于启动前的诊断日志。 */
   readonly gatewayURL?: string
+  readonly existingWebURL?: string
   /** 日志。 */
   readonly logger: { debug(message: string): void; warn(message: string): void }
 }
@@ -175,6 +198,12 @@ export async function findFreePort(host: string, preferred: number, attempts: nu
   throw new Error(`端口 ${String(preferred)}–${String(preferred + attempts - 1)} 全部被占用`)
 }
 
+/** 浏览器明确标记为跨站的请求不能继承 Magpie 登录态。缺省头（测试与非浏览器客户端）放行。 */
+function isCrossSite(headers: { [key: string]: string | string[] | undefined }): boolean {
+  const site = headers['sec-fetch-site']
+  return (Array.isArray(site) ? site[0] : site) === 'cross-site'
+}
+
 function toHeaderList(value: string | string[] | undefined): string[] {
   if (value === undefined) return []
   return Array.isArray(value) ? value : [value]
@@ -188,12 +217,18 @@ function decodeBody(raw: Buffer, encoding: string): Buffer {
   throw new Error(`不支持的 content-encoding: ${encoding}`)
 }
 
+const WEB_KEY_GUIDE = '如果你指定了 webURL，请从同一个 Magpie Web 实例最新的启动链接复制 k= 后面的值，填到 DSH「插件 → Magpie 桥」的 webKey，再重新打开面板。如果 webURL 留空，插件会自动登录。若仍看到这条提示，请检查插件配置里的 webKey，留空即可由插件管理。'
+
 /** 登录 magpie web：GET /?k=<key>（manual redirect），取 Set-Cookie 首段。 */
 async function login(baseUrl: string, key: string, timeoutMs: number): Promise<string> {
   const response = await fetch(`${baseUrl}/?k=${encodeURIComponent(key)}`, {
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),
   })
+  if (response.status === 401 || response.status === 403) {
+    await response.body?.cancel()
+    throw new Error(`Magpie Web 拒绝了网页登录。${WEB_KEY_GUIDE}`)
+  }
   const cookies = response.headers.getSetCookie?.() ?? []
   const raw = cookies.length > 0 ? cookies[0] : response.headers.get('set-cookie')
   if (raw === null || raw === undefined || raw.length === 0) {
@@ -201,7 +236,7 @@ async function login(baseUrl: string, key: string, timeoutMs: number): Promise<s
   }
   const first = raw.split(';')[0]
   if (first === undefined || !first.includes('=')) {
-    throw new Error(`magpie web 返回了无法解析的 Set-Cookie：${raw.slice(0, 120)}`)
+    throw new Error('magpie web 返回了无法解析的登录 Cookie')
   }
   return first.trim()
 }
@@ -414,6 +449,12 @@ async function startProxy(
   preferredPort: number,
 ): Promise<{ server: Server; port: number }> {
   const server = createHttpServer((request, response) => {
+    if (isCrossSite(request.headers)) {
+      response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+      response.end('拒绝跨站请求')
+      request.resume()
+      return
+    }
     const chunks: Buffer[] = []
     request.on('data', (chunk: Buffer) => {
       chunks.push(chunk)
@@ -456,16 +497,22 @@ async function startProxy(
         headers,
       },
       (upstreamResponse) => {
-        // cookie 被拒：重新登录后重放这一次请求（只重试一次）。
-        if (upstreamResponse.statusCode === 401 && allowRetry) {
+        const isPanelNavigation = request.method === 'GET' && request.url?.split('?')[0] === '/'
+          && request.headers.accept?.includes('text/html')
+        if (upstreamResponse.statusCode === 401 && isPanelNavigation) {
           upstreamResponse.resume()
-          void refresh().then((ok) => {
+          const retry = allowRetry ? refresh() : Promise.resolve(false)
+          void retry.then((ok) => {
             if (response.destroyed) return
-            if (ok) sendUpstream(body, false)
-            else {
-              response.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
-              response.end('magpie web 登录已失效，请重开面板')
+            if (ok) {
+              sendUpstream(body, false)
+              return
             }
+            response.writeHead(401, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store',
+            })
+            response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Magpie Web 登录失败</title><main style="max-width:36rem;margin:3rem auto;padding:0 1.25rem;font:1rem/1.7 system-ui"><h1>Magpie Web 登录失败</h1><p>${WEB_KEY_GUIDE}</p></main></html>`)
           })
           return
         }
@@ -548,6 +595,10 @@ async function startProxy(
 
   // WebSocket 升级：手工拼 101 响应行后双向 pipe（magpie 的实时通道）。
   server.on('upgrade', (request, socket, head) => {
+    if (isCrossSite(request.headers)) {
+      socket.destroy()
+      return
+    }
     const target = getUpstream()
     if (target === undefined) {
       socket.destroy()
@@ -644,12 +695,40 @@ export class MagpieWebBridge {
   async ensure(): Promise<MagpieWebHandle> {
     if (this.disposed) throw new Error('Web 桥已卸载')
     if (this.starting !== undefined) return this.starting
-    if (this.handle !== undefined && isProcessAlive(this.handle.pid)) return this.handle
-    this.discardHandle()
-    this.starting = this.start().finally(() => {
+    if (this.handle !== undefined && !this.options.existingWebURL && isProcessAlive(this.handle.pid)) {
+      return this.handle
+    }
+    this.starting = this.reconcile().finally(() => {
       this.starting = undefined
     })
     return this.starting
+  }
+
+  /** 外部 Web 仍可用时复用句柄；否则丢掉死句柄并重新登录。 */
+  private async reconcile(): Promise<MagpieWebHandle> {
+    if (this.options.existingWebURL && this.handle !== undefined && (await this.externalReachable())) {
+      return this.handle
+    }
+    this.discardHandle()
+    return this.start()
+  }
+
+  /** 配置的上游是否还在回答。401 先刷新登录，连接失败才视为已停止。 */
+  private async externalReachable(): Promise<boolean> {
+    const upstream = this.upstream
+    if (upstream === undefined) return false
+    try {
+      const response = await fetch(`http://${urlHost(upstream.host)}:${String(upstream.port)}/`, {
+        headers: { cookie: upstream.cookie, accept: 'text/html' },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(2_000),
+      })
+      await response.body?.cancel()
+      if (response.status === 401 || response.status === 403) return this.refreshLogin()
+      return response.status < 500
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -764,6 +843,7 @@ export class MagpieWebBridge {
         this.options.key,
         10_000,
       )
+      if (this.upstream !== current) return false
       this.upstream = { host: current.host, port: current.port, cookie }
       return true
     } catch (error) {
@@ -815,8 +895,19 @@ export class MagpieWebBridge {
 
   /** 真正的启动流程：spawn → 等就绪 → 登录 → 接上代理。 */
   private async start(): Promise<MagpieWebHandle> {
-    const { binary, host, key, logger } = this.options
+    const { binary, host, key, logger, existingWebURL } = this.options
     const timeoutMs = this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS
+
+    if (existingWebURL) {
+      const url = parseWebOrigin(existingWebURL)
+      const cookie = await login(url.origin, key, timeoutMs)
+      const { port } = await this.ensureProxy()
+      if (this.disposed) throw new Error('Web 桥已卸载')
+      const upstreamPort = Number(url.port || 80)
+      this.upstream = { host: connectHost(url.hostname), port: upstreamPort, cookie }
+      this.handle = { url: mainWindowUrl('127.0.0.1', port), port, upstreamPort, pid: undefined }
+      return this.handle
+    }
 
     if (binary === undefined) {
       throw new Error(
@@ -829,7 +920,7 @@ export class MagpieWebBridge {
     }
 
     guard()
-    const upstreamPort = await findFreePort(host, this.options.preferredPort, DEFAULT_PORT_ATTEMPTS)
+    const preferredPort = await findFreePort(host, this.options.preferredPort, DEFAULT_PORT_ATTEMPTS)
     guard()
 
     if (!/^[A-Za-z0-9._~-]{16,}$/u.test(key)) {
@@ -847,11 +938,11 @@ export class MagpieWebBridge {
       )
     }
 
-    logger.debug(`[magpie] 启动 magpie serve --web（${host}:${String(upstreamPort)}）`)
+    logger.debug(`[magpie] 启动 magpie serve --web（${host}:${String(preferredPort)}）`)
 
     // serve --web= 是一个进程同时提供网关 + Web UI；网关已被别的实例占用时
     // 它只提供 Web UI（日志里那句 another magpie serves the gateway there）。
-    const child = spawn(binary, ['serve', `--web=${host}:${String(upstreamPort)}`], {
+    const child = spawn(binary, ['serve', `--web=${urlHost(connectHost(host))}:${String(preferredPort)}`], {
       env: { ...process.env, MAGPIE_WEB_KEY: key },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -862,7 +953,7 @@ export class MagpieWebBridge {
     try {
       guard()
 
-      await new Promise<void>((resolve, reject) => {
+      const webOrigin = await new Promise<URL>((resolve, reject) => {
         let settled = false
         let buffered = ''
 
@@ -888,14 +979,13 @@ export class MagpieWebBridge {
         }
         const onStdout = (chunk: Buffer): void => {
           buffered += chunk.toString('utf8')
-          const match = READY_PATTERN.exec(buffered)
-          if (match?.[1] === undefined) {
+          const origin = readyWebOrigin(buffered)
+          if (origin === undefined) {
             if (buffered.length > 8_192) buffered = buffered.slice(-4_096)
             return
           }
           settle(() => {
-            logger.debug(`[magpie] magpie web 就绪：${match[0]}`)
-            resolve()
+            resolve(origin)
           })
         }
         const onStderr = (chunk: Buffer): void => {
@@ -904,8 +994,7 @@ export class MagpieWebBridge {
         }
         const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
           fail(
-            `magpie web 提前退出（code=${code === null ? 'null' : String(code)}, signal=${signal === null ? 'null' : signal}）` +
-              (buffered.length > 0 ? `：${buffered.slice(-400)}` : ''),
+            `magpie web 提前退出（code=${code === null ? 'null' : String(code)}, signal=${signal === null ? 'null' : signal}）`,
           )
         }
         const onError = (error: Error): void => {
@@ -924,11 +1013,8 @@ export class MagpieWebBridge {
 
       guard()
 
-      const cookie = await login(
-        `http://${urlHost(connectHost(host))}:${String(upstreamPort)}`,
-        key,
-        timeoutMs,
-      )
+      const upstreamPort = Number(webOrigin.port || 80)
+      const cookie = await login(webOrigin.origin, key, timeoutMs)
       guard()
       logger.debug(`[magpie] 已取得登录 cookie（${cookie.split('=')[0] ?? '?'}）`)
 
@@ -940,10 +1026,10 @@ export class MagpieWebBridge {
       const { port: proxyPort } = await this.ensureProxy()
       guard()
 
-      this.upstream = { host: connectHost(host), port: upstreamPort, cookie }
+      this.upstream = { host: connectHost(webOrigin.hostname), port: upstreamPort, cookie }
 
       const handle: MagpieWebHandle = {
-        url: mainWindowUrl(host, proxyPort),
+        url: mainWindowUrl('127.0.0.1', proxyPort),
         port: proxyPort,
         upstreamPort,
         pid: child.pid,
