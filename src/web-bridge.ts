@@ -515,7 +515,8 @@ async function startProxy(
         response.end('magpie web 无响应')
       }
     })
-    upstream.end()
+    // 转发请求体（POST/PUT 等）；GET 时没有 body，pipe 立即 end。
+    request.pipe(upstream)
   })
 
   // WebSocket 升级：手工拼 101 响应行后双向 pipe（magpie 的实时通道）。
@@ -556,7 +557,9 @@ async function startProxy(
       socket.once('error', () => upstreamSocket.destroy())
     })
     upstream.on('error', () => socket.destroy())
-    upstream.end()
+    // 客户端在握手前可能已发数据（head），先写回去再 pipe。
+    if (head.length > 0) upstream.write(Buffer.from(head))
+    socket.pipe(upstream)
   })
 
   // 固定端口（被占则递增）；不能用 listen(0)——iframe 的 src 不能变。
