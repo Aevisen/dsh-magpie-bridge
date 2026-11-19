@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Magpie bridge",
+    "description": "Embeds magpie's official Web UI in the sidebar, settings, and a compact dock window, and gives agents magpie CLI tools (magpie, magpie_quota). Needs a local magpie: the app you installed is used as-is, otherwise the binary is downloaded to ~/.dsh/magpie/bin and started in the background. Destructive CLI commands ask for confirmation first. Turning the plugin off stops only the magpie process it started; downloaded files stay."
+  }
+}

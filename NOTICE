@@ -1,0 +1,14 @@
+# Third-party notices
+
+## Betsy20/dsh-magpie
+
+The process bridge and cookie-injecting reverse proxy in `src/web-bridge.ts`
+are adapted from [Betsy20/dsh-magpie](https://github.com/Betsy20/dsh-magpie),
+which is licensed under the MIT License. Copyright (c) Betsy.
+
+## magpie
+
+This plugin embeds and drives [magpie](https://github.com/yetone/magpie)
+(MIT License, Copyright (c) yetone) but does not redistribute its code.
+The magpie binary, when downloaded, comes from the upstream release and
+remains under its own license.

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Magpie 桥",
+    "description": "把 magpie 的原版 Web UI 嵌进侧边栏、设置页和输入框旁的小窗，并给 agent 提供 magpie CLI 工具（magpie、magpie_quota）。需要本机 magpie：已安装的直接使用，否则自动下载到 ~/.dsh/magpie/bin 并后台启动。破坏性 CLI 命令会先请求确认。关闭插件只停掉它自己启动的 magpie 进程，下载的文件保留。"
+  }
+}
