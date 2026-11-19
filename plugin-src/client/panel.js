@@ -131,8 +131,8 @@ export function MagpieDockButton({ rpcCall }) {
       .then(([panel, main]) => {
         if (!cancelled) setUrls({ panel: panel.url, main: main.url })
       })
-      .catch(() => {
-        if (!cancelled) setUrls({ panel: null, main: null })
+      .catch((error) => {
+        if (!cancelled) setUrls({ error: String((error && error.message) || error) })
       })
     return () => {
       cancelled = true
@@ -149,7 +149,7 @@ export function MagpieDockButton({ rpcCall }) {
     }
   }
 
-  const src = urls === null ? null : full ? urls.main : urls.panel
+  const src = urls === null || urls.error ? null : full ? urls.main : urls.panel
 
   return h('div', { className: 'dshm-dock' }, [
     h(MagpieStyles, { key: 'style' }),
@@ -178,15 +178,28 @@ export function MagpieDockButton({ rpcCall }) {
               '×',
             ),
           ]),
-          src
-            ? h('iframe', {
-                ref: frameRef,
-                className: 'dshm-dock__frame',
-                src,
-                title: 'magpie',
-                onLoad: onFrameLoad,
-              })
-            : h('div', { className: 'dshm-dock__loading' }, '正在连接 magpie…'),
+          urls && urls.error
+            ? h('div', { className: 'dshm-dock__loading' }, [
+                h('p', { key: 'msg' }, urls.error),
+                h(
+                  'button',
+                  {
+                    className: 'dshm-magpie__button',
+                    key: 'retry',
+                    onClick: () => setUrls(null),
+                  },
+                  '重试',
+                ),
+              ])
+            : src
+              ? h('iframe', {
+                  ref: frameRef,
+                  className: 'dshm-dock__frame',
+                  src,
+                  title: 'magpie',
+                  onLoad: onFrameLoad,
+                })
+              : h('div', { className: 'dshm-dock__loading' }, '正在连接 magpie…'),
         ])
       : null,
   ])

@@ -52,14 +52,12 @@ export const DEFAULT_PROXY_PORT = 3591
 /** 代理转发时必须丢弃的请求头（hop-by-hop + 需要重算的）。 */
 export const DROPPED_REQUEST_HEADERS = new Set([
   'host',
-  'connection',
   'keep-alive',
   'proxy-authenticate',
   'proxy-authorization',
   'te',
   'trailer',
   'transfer-encoding',
-  'upgrade',
   'content-length',
 ])
 
@@ -72,7 +70,6 @@ export const DROPPED_REQUEST_HEADERS = new Set([
  */
 export const DROPPED_RESPONSE_HEADERS = new Set([
   'set-cookie',
-  'connection',
   'content-security-policy',
   'content-security-policy-report-only',
   'keep-alive',
@@ -81,7 +78,6 @@ export const DROPPED_RESPONSE_HEADERS = new Set([
   'te',
   'trailer',
   'transfer-encoding',
-  'upgrade',
   'x-frame-options',
 ])
 
@@ -556,10 +552,22 @@ async function startProxy(
       upstreamSocket.once('error', () => socket.destroy())
       socket.once('error', () => upstreamSocket.destroy())
     })
+    // 上游拒绝升级（返回普通响应）时把响应写回，而不是让 socket 挂到超时。
+    upstream.on('response', (upstreamResponse) => {
+      const lines = [
+        `HTTP/1.1 ${String(upstreamResponse.statusCode ?? 502)} ${upstreamResponse.statusMessage ?? 'Bad Gateway'}`,
+      ]
+      for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+        if (DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
+        for (const item of toHeaderList(value)) lines.push(`${name}: ${item}`)
+      }
+      socket.write(`${lines.join('\r\n')}\r\n\r\n`)
+      upstreamResponse.pipe(socket)
+    })
     upstream.on('error', () => socket.destroy())
-    // 客户端在握手前可能已发数据（head），先写回去再 pipe。
+    // 客户端在握手前可能已发数据（head），先写回去再结束请求。
     if (head.length > 0) upstream.write(Buffer.from(head))
-    socket.pipe(upstream)
+    upstream.end()
   })
 
   // 固定端口（被占则递增）；不能用 listen(0)——iframe 的 src 不能变。
@@ -663,7 +671,7 @@ export class MagpieWebBridge {
   }
 
   /** 安排一次自动重启（指数退避；启动即失败也走这里）。 */
-  private scheduleRestart(reason: string): void {
+  scheduleRestart(reason: string): void {
     if (this.disposed) return
     this.restartAttempts += 1
     const attempt = this.restartAttempts

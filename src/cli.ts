@@ -47,6 +47,9 @@ export const DANGEROUS_PREFIXES: readonly (readonly string[])[] = [
   ['github', 'on'],
   ['s3', 'on'],
   ['webdav', 'on'],
+  ['backup'],
+  ['use'],
+  ['import'],
 ]
 
 /** 去掉前导 flag 后的命令路径。 */

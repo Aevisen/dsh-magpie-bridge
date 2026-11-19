@@ -5,7 +5,7 @@
  * 两者都没有时降级为「仅防损坏」并 warn（不阻断安装）。
  * @module dsh-magpie-bridge/download
  */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -117,7 +117,7 @@ export async function ensureMagpieBinary(options: EnsureOptions): Promise<string
   const bytes = await fetchBytes(entry.browser_download_url, signal)
   throwIfAborted()
 
-  const part = `${target}.part`
+  const part = `${target}.${randomUUID()}.part`
   try {
     await mkdir(dirname(target), { recursive: true })
     await writeFile(part, bytes)

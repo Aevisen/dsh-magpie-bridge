@@ -80,7 +80,7 @@ export function registerMagpieTools(ctx: unknown, deps: RegisterToolsDeps): void
       description:
         'Run a magpie CLI command. Args is the argument array (no shell). ' +
         'Examples: ["dsh","deepseek/deepseek-chat"], ["quota"], ["providers"], ["group","add","daily","models=a/b,c/d"]. ' +
-        'Destructive or account-changing commands (uninstall, restore, rm, provider rm, accounts export, quota reset, data move, plugin add/rm, ...) ' +
+        'Destructive or account-changing commands (uninstall, restore, rm, provider rm, accounts export, quota reset, data move, plugin add/rm, backup, use, import, ...) ' +
         'ask the user for confirmation before running; anything else runs directly. ' +
         'Output is truncated at the configured limit.',
       parameters: {
@@ -104,11 +104,12 @@ export function registerMagpieTools(ctx: unknown, deps: RegisterToolsDeps): void
       },
       timeoutMs: options.toolTimeoutMs + 5_000,
       isConcurrencySafe: () => false,
-      async execute(args) {
+      async execute(args, exec) {
         const binary = await resolve()
         const result = await runMagpie(binary, args.args, {
           timeoutMs: args.timeoutMs ?? options.toolTimeoutMs,
           outputLimit: options.toolOutputLimit,
+          signal: exec.signal,
         })
         return {
           command: args.args.join(' '),
@@ -137,18 +138,21 @@ export function registerMagpieTools(ctx: unknown, deps: RegisterToolsDeps): void
       output: {
         schema: { type: 'object', additionalProperties: true },
         render: (_args, value) => {
-          const record = value as { text: string }
-          return [{ type: 'text', text: record.text }]
+          const record = value as { text: string; stderr: string; code: number | null }
+          const lines = [record.text]
+          if (record.stderr.length > 0) lines.push(record.stderr)
+          if (record.code !== null && record.code !== 0) lines.push(`[exit ${String(record.code)}]`)
+          return [{ type: 'text', text: lines.filter((line) => line.length > 0).join('\n') }]
         },
       },
       timeoutMs: options.toolTimeoutMs + 5_000,
       isConcurrencySafe: () => false,
-      async execute(args) {
+      async execute(args, exec) {
         const binary = await resolve()
         const result = await runMagpie(
           binary,
           ['quota', '--json', ...(args.providers ?? [])],
-          { timeoutMs: options.toolTimeoutMs, outputLimit: options.toolOutputLimit },
+          { timeoutMs: options.toolTimeoutMs, outputLimit: options.toolOutputLimit, signal: exec.signal },
         )
         const summary = summarizeQuota(result.stdout)
         return {
@@ -161,10 +165,11 @@ export function registerMagpieTools(ctx: unknown, deps: RegisterToolsDeps): void
     }),
   )
 
-  context.on?.('tools/pre-execute', (exec: { name: string; args: { args: string[] } }, next: () => Promise<unknown>) => {
+  context.on?.('tools/pre-execute', (exec: { name: string; arguments: { args: string[] } }, next: () => Promise<unknown>) => {
     if (exec.name !== 'magpie') return next()
-    if (!isDangerousCommand(exec.args.args ?? [])) return next()
-    const command = (exec.args.args ?? []).join(' ')
+    const args = exec.arguments?.args ?? []
+    if (!isDangerousCommand(args)) return next()
+    const command = args.join(' ')
     return Promise.resolve({
       kind: 'ask',
       reason: `magpie 危险命令：magpie ${command}`,

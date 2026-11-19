@@ -229,6 +229,8 @@ export function apply(ctx: unknown, config?: unknown): void {
             logger.warn(
               `[magpie] 自动启动网关失败：${messageOf(error)}；如果网关跑在别处，把 autoStartGateway 关掉即可`,
             )
+            // 冷启动失败也进入自愈循环（magpie 稍后装好、端口稍后释放都能恢复）。
+            bridge.scheduleRestart('首次启动失败')
           },
         )
       },

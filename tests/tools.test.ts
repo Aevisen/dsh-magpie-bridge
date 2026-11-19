@@ -18,6 +18,12 @@ describe('isDangerousCommand', () => {
     expect(isDangerousCommand(['--help'])).toBe(false)
     expect(isDangerousCommand([])).toBe(false)
   })
+
+  it('asks before backup, profile switch and import', () => {
+    expect(isDangerousCommand(['backup'])).toBe(true)
+    expect(isDangerousCommand(['use', 'work'])).toBe(true)
+    expect(isDangerousCommand(['import', 'magpie://x'])).toBe(true)
+  })
 })
 
 import { summarizeQuota } from '../src/tools.js'
@@ -77,12 +83,12 @@ describe('registerMagpieTools', () => {
     expect(preExecute).toBeDefined()
     const next = async () => ({ kind: 'allow' })
 
-    const dangerous = (await preExecute?.({ name: 'magpie', args: { args: ['provider', 'rm', 'x'] } }, next)) as {
+    const dangerous = (await preExecute?.({ name: 'magpie', arguments: { args: ['provider', 'rm', 'x'] } }, next)) as {
       kind: string
     }
     expect(dangerous.kind).toBe('ask')
 
-    const safe = (await preExecute?.({ name: 'magpie', args: { args: ['quota'] } }, next)) as { kind: string }
+    const safe = (await preExecute?.({ name: 'magpie', arguments: { args: ['quota'] } }, next)) as { kind: string }
     expect(safe.kind).toBe('allow')
   })
 })
