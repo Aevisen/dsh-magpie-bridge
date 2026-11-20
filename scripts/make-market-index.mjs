@@ -50,8 +50,8 @@ const document = {
       title: { en: 'Magpie bridge', zh: 'Magpie 桥' },
       description: { en: description, zh: description },
       icon: new URL('icon.svg', indexUrl).href,
-      author: pkg.author,
-      homepage: pkg.homepage,
+      author: typeof pkg.author === 'string' && pkg.author.trim() ? pkg.author : undefined,
+      homepage: typeof pkg.homepage === 'string' && pkg.homepage.trim() ? pkg.homepage : undefined,
       repository: pkg.repository?.url
         ? { url: pkg.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') }
         : undefined,

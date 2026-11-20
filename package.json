@@ -12,6 +12,7 @@
   ],
   "type": "module",
   "license": "MIT",
+  "author": "Kairo Verge",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -67,5 +68,13 @@
     "esbuild": "^0.24.0",
     "typescript": "~5.9.0",
     "vitest": "^3.0.0"
+  },
+  "homepage": "https://github.com/Aevisen/dsh-magpie-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aevisen/dsh-magpie-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Aevisen/dsh-magpie-bridge/issues"
   }
 }
