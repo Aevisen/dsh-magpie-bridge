@@ -121,6 +121,21 @@ describe('proxy behavior', () => {
     expect(await page.text()).toContain('超过代理大小限制')
   })
 
+  it('preserves UTF-8 Chinese on a failed Magpie login and on upstream errors', async () => {
+    const upstream = createServer((_req, res) => {
+      res.writeHead(502, { 'content-type': 'text/plain' }).end('magpie web 无响应')
+    })
+    servers.push(upstream)
+    const port = await listen(upstream)
+    const bridge = new MagpieWebBridge({ binary: undefined, key: 'a'.repeat(20), host: '127.0.0.1', preferredPort: 3480, proxyPort: 46001, logger })
+    bridges.push(bridge)
+    const proxy = await bridge.attachProxy({ host: '127.0.0.1', port, cookie: 'session=secret' })
+    const response = await fetch(proxy.url)
+    expect(response.status).toBe(502)
+    expect(response.headers.get('content-type')).toContain('charset=utf-8')
+    expect(await response.text()).toContain('magpie web 无响应')
+  })
+
   it('requires the proxy session for a WebSocket upgrade', async () => {
     let upgradeCookie: string | undefined
     const upstream = createServer((_req, res) => res.end('ready'))

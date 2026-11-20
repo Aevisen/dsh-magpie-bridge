@@ -207,6 +207,16 @@ function toHeaderList(value: string | string[] | undefined): string[] {
   return Array.isArray(value) ? value : [value]
 }
 
+/** 上游的中文错误页常省略 charset，浏览器会按 Latin-1 解码。 */
+function withUtf8ContentType(headers: Record<string, string | string[]>): void {
+  const value = headers['content-type']
+  if (typeof value !== 'string') return
+  const lower = value.toLowerCase()
+  if ((lower.startsWith('text/') || lower.includes('application/json')) && !lower.includes('charset=')) {
+    headers['content-type'] = `${value}; charset=utf-8`
+  }
+}
+
 const MAX_HTML_BYTES = 4 * 1024 * 1024
 
 /** 解码响应体（gzip/br/deflate）；未知编码抛错。 */
@@ -551,6 +561,7 @@ async function startProxy(
             if (value === undefined || DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
             responseHeaders[name] = value
           }
+          withUtf8ContentType(responseHeaders)
 
           if (bootstrap) responseHeaders['cache-control'] = 'no-store'
           const contentType = responseHeaders['content-type']
@@ -565,7 +576,7 @@ async function startProxy(
             upstreamResponse.on('data', (chunk: Buffer) => {
               bytes += chunk.length
               if (bytes > MAX_HTML_BYTES) {
-                response.writeHead(502).end('Magpie 页面超过代理大小限制')
+                response.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end('Magpie 页面超过代理大小限制')
                 upstreamResponse.destroy()
                 return
               }
@@ -579,7 +590,7 @@ async function startProxy(
             })
             upstreamResponse.once('error', () => {
               if (!response.destroyed && !response.headersSent) {
-                response.writeHead(502)
+                response.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
                 response.end('magpie web 上游错误')
               }
             })
@@ -624,7 +635,7 @@ async function startProxy(
       upstream.once('error', () => {
         if (response.destroyed || response.writableEnded) return
         if (response.headersSent) response.destroy()
-        else response.writeHead(502).end('magpie web 无响应')
+        else response.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end('magpie web 无响应')
       })
       response.once('close', () => {
         if (!response.writableEnded) upstream.destroy()
