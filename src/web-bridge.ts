@@ -165,9 +165,11 @@ export function mainWindowUrl(host: string, port: number): string {
   return `http://${urlHost(connectHost(host))}:${String(port)}/`
 }
 
-/** 小窗 URL（`/?mode=panel`，magpie 托盘同款的紧凑形态）。 */
-export function dockWindowUrl(host: string, port: number): string {
-  return `http://${urlHost(connectHost(host))}:${String(port)}/?mode=panel`
+/** 小窗 URL：在主窗口 URL 上追加 `mode=panel`（magpie 托盘同款的紧凑形态）。 */
+export function dockWindowUrl(panelUrl: string): string {
+  const url = new URL(panelUrl)
+  url.searchParams.set('mode', 'panel')
+  return url.href
 }
 
 /** 探测空闲端口：bind 成功即关闭，从 preferred 起逐个试。 */
@@ -200,6 +202,24 @@ export async function findFreePort(host: string, preferred: number, attempts: nu
 function matchesSecret(value: string, secret: Buffer): boolean {
   const presented = Buffer.from(value)
   return presented.length === secret.length && timingSafeEqual(presented, secret)
+}
+
+/**
+ * 复制可转发的头，保持原始大小写，丢弃 hop-by-hop 等名单（大小写不敏感）。
+ *
+ * @param source - 原始头表。
+ * @param dropped - 需要丢弃的头名集合。
+ */
+export function copyForwardedHeaders(
+  source: Record<string, string | string[] | undefined>,
+  dropped: ReadonlySet<string>,
+): Record<string, string | string[]> {
+  const copied: Record<string, string | string[]> = {}
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined || dropped.has(name.toLowerCase())) continue
+    copied[name] = value
+  }
+  return copied
 }
 
 function toHeaderList(value: string | string[] | undefined): string[] {
@@ -520,11 +540,7 @@ async function startProxy(
         return
       }
 
-      const headers: Record<string, string | string[]> = {}
-      for (const [name, value] of Object.entries(request.headers)) {
-        if (value === undefined || DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) continue
-        headers[name] = value
-      }
+      const headers = copyForwardedHeaders(request.headers, DROPPED_REQUEST_HEADERS)
       if (request.headers['content-length'] !== undefined) headers['content-length'] = request.headers['content-length']
       headers['host'] = `${target.host}:${String(target.port)}`
       headers['cookie'] = target.cookie
@@ -556,11 +572,7 @@ async function startProxy(
             return
           }
 
-          const responseHeaders: Record<string, string | string[]> = {}
-          for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-            if (value === undefined || DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
-            responseHeaders[name] = value
-          }
+          const responseHeaders = copyForwardedHeaders(upstreamResponse.headers, DROPPED_RESPONSE_HEADERS)
           withUtf8ContentType(responseHeaders)
 
           if (bootstrap) responseHeaders['cache-control'] = 'no-store'
@@ -662,11 +674,7 @@ async function startProxy(
       socket.destroy()
       return
     }
-    const headers: Record<string, string | string[]> = {}
-    for (const [name, value] of Object.entries(request.headers)) {
-      if (value === undefined || DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) continue
-      headers[name] = value
-    }
+    const headers = copyForwardedHeaders(request.headers, DROPPED_REQUEST_HEADERS)
     headers['host'] = `${target.host}:${String(target.port)}`
     headers['cookie'] = target.cookie
 
@@ -681,8 +689,7 @@ async function startProxy(
       const lines = [
         `HTTP/1.1 ${String(upstreamResponse.statusCode ?? 101)} ${upstreamResponse.statusMessage ?? 'Switching Protocols'}`,
       ]
-      for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-        if (DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
+      for (const [name, value] of Object.entries(copyForwardedHeaders(upstreamResponse.headers, DROPPED_RESPONSE_HEADERS))) {
         for (const item of toHeaderList(value)) lines.push(`${name}: ${item}`)
       }
       socket.write(`${lines.join('\r\n')}\r\n\r\n`)
@@ -698,8 +705,7 @@ async function startProxy(
       const lines = [
         `HTTP/1.1 ${String(upstreamResponse.statusCode ?? 502)} ${upstreamResponse.statusMessage ?? 'Bad Gateway'}`,
       ]
-      for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-        if (DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
+      for (const [name, value] of Object.entries(copyForwardedHeaders(upstreamResponse.headers, DROPPED_RESPONSE_HEADERS))) {
         for (const item of toHeaderList(value)) lines.push(`${name}: ${item}`)
       }
       socket.write(`${lines.join('\r\n')}\r\n\r\n`)

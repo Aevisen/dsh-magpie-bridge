@@ -19,7 +19,7 @@ import { persistedWebKey, resolveOptions, Config, type MagpieOptions } from './c
 import { describeSource, resolveMagpieBinary } from './binary.js'
 import { ensureMagpieBinary } from './download.js'
 import { registerMagpieTools } from './tools.js'
-import { MagpieWebBridge } from './web-bridge.js'
+import { dockWindowUrl, MagpieWebBridge } from './web-bridge.js'
 
 export { Config }
 
@@ -80,9 +80,7 @@ export function createPanelHandler(
           if (method === 'web.url') {
             return { ok: true, value: { url: handle.url, port: handle.port } }
           }
-          const dockUrl = new URL(handle.url)
-          dockUrl.searchParams.set('mode', 'panel')
-          return { ok: true, value: { url: dockUrl.href } }
+          return { ok: true, value: { url: dockWindowUrl(handle.url) } }
         } catch (error) {
           return {
             ok: false,

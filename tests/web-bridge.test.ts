@@ -5,6 +5,7 @@ import {
   DROPPED_REQUEST_HEADERS,
   DROPPED_RESPONSE_HEADERS,
   dockWindowUrl,
+  copyForwardedHeaders,
   findFreePort,
   mainWindowUrl,
   readyWebOrigin,
@@ -29,8 +30,10 @@ describe('window URLs', () => {
     expect(mainWindowUrl('127.0.0.1', 2)).toBe('http://127.0.0.1:2/')
   })
 
-  it('appends the panel mode for the dock window', () => {
-    expect(dockWindowUrl('127.0.0.1', 5)).toBe('http://127.0.0.1:5/?mode=panel')
+  it('appends the panel mode to an existing panel URL', () => {
+    expect(dockWindowUrl('http://127.0.0.1:5/?dshFrame=abc')).toBe(
+      'http://127.0.0.1:5/?dshFrame=abc&mode=panel',
+    )
   })
 })
 
@@ -65,6 +68,21 @@ describe('findFreePort', () => {
       first.close()
       second.close()
     }
+  })
+})
+
+describe('copyForwardedHeaders', () => {
+  it('keeps original casing and drops every listed name case-insensitively', () => {
+    expect(copyForwardedHeaders(
+      { 'X-Keep': 'yes', 'Set-Cookie': 'a=1', 'Host': 'x' },
+      new Set(['set-cookie', 'host']),
+    )).toEqual({ 'X-Keep': 'yes' })
+  })
+
+  it('passes array values through untouched', () => {
+    expect(copyForwardedHeaders({ 'X-Multi': ['a', 'b'] }, new Set())).toEqual({
+      'X-Multi': ['a', 'b'],
+    })
   })
 })
 
