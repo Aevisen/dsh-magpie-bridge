@@ -89,12 +89,12 @@ async function validate() {
 }
 
 // 图标与索引同目录托管，便于静态站点直接引用。
-const marketDir = join(root, 'market')
+const marketDir = join(root, 'docs', 'market')
 mkdirSync(marketDir, { recursive: true })
 copyFileSync(join(root, 'icon.svg'), join(marketDir, 'icon.svg'))
 
 const validated = await validate()
-const out = join(root, 'market', 'index.json')
+const out = join(root, 'docs', 'market', 'index.json')
 mkdirSync(dirname(out), { recursive: true })
 writeFileSync(out, `${JSON.stringify(document, null, 2)}\n`, 'utf8')
 console.log(`[market] 已生成 ${out}（${name}@${version}，官方校验：${validated ? '通过' : '跳过'}）`)

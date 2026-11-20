@@ -96,13 +96,13 @@ npm publish               # 需要 npm 登录；包名 dsh-magpie-bridge
 ### 2. 生成并托管索引
 
 ```sh
-MARKET_INDEX_URL=https://<你的域名>/dsh-magpie/market/index.json \
+MARKET_INDEX_URL=https://<你的域名>/dsh-magpie/docs/market/index.json \
   ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" node scripts/make-market-index.mjs
 ```
 
-脚本从 `package.json` 读取名称与版本，写出 `market/index.json`，并把 `icon.svg` 复制到同目录。索引用官方 `@deepseek-ai/dsh-plugin-market-index` 校验（必须用 DSH 的 Electron 运行时，普通 Node 读不到 app.asar）。
+脚本从 `package.json` 读取名称与版本，写出 `docs/market/index.json`，并把 `icon.svg` 复制到同目录。索引用官方 `@deepseek-ai/dsh-plugin-market-index` 校验（必须用 DSH 的 Electron 运行时，普通 Node 读不到 app.asar）。
 
-把 `market/index.json` 与 `market/icon.svg` 放到任意静态地址（GitHub Pages、对象存储、你自己的域名）。
+把 `docs/market/index.json` 与 `docs/market/icon.svg` 放到任意静态地址（GitHub Pages、对象存储、你自己的域名）。
 
 ### 3. 让用户装
 
