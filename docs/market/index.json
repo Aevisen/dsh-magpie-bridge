@@ -31,7 +31,7 @@
         "en": "把 [magpie](https://github.com/yetone/magpie) 的原版 Web UI 嵌进 DeepSeek Harness，并给 agent 提供 magpie 的 CLI 工具。",
         "zh": "把 [magpie](https://github.com/yetone/magpie) 的原版 Web UI 嵌进 DeepSeek Harness，并给 agent 提供 magpie 的 CLI 工具。"
       },
-      "icon": "https://example.com/dsh-magpie/market/icon.svg",
+      "icon": "https://aevisen.github.io/dsh-magpie-bridge/market/icon.svg",
       "metadata": {
         "category": "integration",
         "keywords": [
@@ -48,7 +48,7 @@
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1795144974,
+          "publishTimestamp": 1795146987,
           "source": {
             "type": "npm"
           },
