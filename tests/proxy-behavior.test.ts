@@ -1,7 +1,7 @@
 /**
  * 代理行为测试：请求体转发、CSP 剥离、HTML 桥接脚本注入。
  */
-import { createServer, get, type Server } from 'node:http'
+import { createServer, get, request, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -24,6 +24,14 @@ describe('proxy behavior', () => {
     for (const server of servers) server.close()
     servers.length = 0
   })
+
+  async function session(url: string): Promise<string> {
+    const response = await fetch(url)
+    const cookie = response.headers.getSetCookie()[0]
+    await response.body?.cancel()
+    expect(cookie).toContain('HttpOnly; Secure; SameSite=None; Partitioned')
+    return cookie!.split(';')[0]!
+  }
 
   it('forwards POST bodies and strips framing headers while injecting the bridge script', async () => {
     let seenBody = ''
@@ -57,9 +65,10 @@ describe('proxy behavior', () => {
     bridges.push(bridge)
     const proxy = await bridge.attachProxy({ host: '127.0.0.1', port: upstreamPort, cookie: 'session=secret' })
 
+    const cookie = await session(proxy.url)
     const response = await fetch(`http://127.0.0.1:${String(proxy.port)}/`, {
       method: 'POST',
-      headers: { 'content-type': 'text/plain' },
+      headers: { 'content-type': 'text/plain', cookie },
       body: 'hello-body',
     })
     const html = await response.text()
@@ -71,6 +80,74 @@ describe('proxy behavior', () => {
     expect(response.headers.get('set-cookie')).toBeNull()
     expect(html).toContain('dsh-magpie')
     expect(html).toContain('</body>')
+  })
+
+  it('forwards a partial upload before the browser ends the request', async () => {
+    let onFirstChunk: () => void = () => {}
+    const firstChunk = new Promise<void>((resolve) => { onFirstChunk = resolve })
+    const upstream = createServer((req, res) => {
+      if (req.method === 'GET') return res.end('ready')
+      req.once('data', onFirstChunk)
+      req.on('end', () => res.end('uploaded'))
+    })
+    servers.push(upstream)
+    const port = await listen(upstream)
+    const bridge = new MagpieWebBridge({ binary: undefined, key: 'a'.repeat(20), host: '127.0.0.1', preferredPort: 3480, proxyPort: 45997, logger })
+    bridges.push(bridge)
+    const proxy = await bridge.attachProxy({ host: '127.0.0.1', port, cookie: 'session=secret' })
+    const cookie = await session(proxy.url)
+    const upload = request(new URL('/upload', proxy.url), { method: 'POST', headers: { cookie }, signal: AbortSignal.timeout(2_000) })
+    const result = new Promise<number | undefined>((resolve, reject) => {
+      upload.once('error', reject)
+      upload.once('response', (res) => { res.resume(); resolve(res.statusCode) })
+    })
+    upload.write('first')
+    await Promise.race([firstChunk, result.then(() => { throw new Error('upload ended too soon') })])
+    upload.end('second')
+    expect(await result).toBe(200)
+  })
+
+  it('rejects oversized HTML before rewriting it', async () => {
+    const upstream = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' }).end('x'.repeat(4 * 1024 * 1024 + 1))
+    })
+    servers.push(upstream)
+    const port = await listen(upstream)
+    const bridge = new MagpieWebBridge({ binary: undefined, key: 'a'.repeat(20), host: '127.0.0.1', preferredPort: 3480, proxyPort: 45999, logger })
+    bridges.push(bridge)
+    const proxy = await bridge.attachProxy({ host: '127.0.0.1', port, cookie: 'session=secret' })
+    const page = await fetch(proxy.url)
+    expect(page.status).toBe(502)
+    expect(await page.text()).toContain('超过代理大小限制')
+  })
+
+  it('requires the proxy session for a WebSocket upgrade', async () => {
+    let upgradeCookie: string | undefined
+    const upstream = createServer((_req, res) => res.end('ready'))
+    upstream.on('upgrade', (req, socket) => {
+      upgradeCookie = req.headers.cookie
+      socket.end('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n')
+    })
+    servers.push(upstream)
+    const port = await listen(upstream)
+    const bridge = new MagpieWebBridge({ binary: undefined, key: 'a'.repeat(20), host: '127.0.0.1', preferredPort: 3480, proxyPort: 45998, logger })
+    bridges.push(bridge)
+    const proxy = await bridge.attachProxy({ host: '127.0.0.1', port, cookie: 'session=secret' })
+    const upgrade = (cookie?: string) => new Promise<number | undefined>((resolve, reject) => {
+      const url = new URL('/socket', proxy.url)
+      const req = request(url, {
+        headers: { origin: url.origin, connection: 'Upgrade', upgrade: 'websocket', ...(cookie ? { cookie } : {}) },
+        signal: AbortSignal.timeout(2_000),
+      })
+      req.once('error', reject)
+      req.once('response', (res) => { res.resume(); resolve(res.statusCode) })
+      req.once('upgrade', (res, socket) => { socket.destroy(); resolve(res.statusCode) })
+      req.end()
+    })
+    expect(await upgrade()).toBe(403)
+    expect(upgradeCookie).toBeUndefined()
+    expect(await upgrade(await session(proxy.url))).toBe(101)
+    expect(upgradeCookie).toBe('session=secret')
   })
 
   it('re-logs-in and retries once when the upstream rejects the cookie', async () => {
@@ -112,7 +189,7 @@ describe('proxy behavior', () => {
       cookie: 'magpie_web_x=stale',
     })
 
-    const response = await fetch(`http://127.0.0.1:${String(proxy.port)}/`, { headers: { accept: 'text/html' } })
+    const response = await fetch(proxy.url, { headers: { accept: 'text/html' } })
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('ok')
     expect(seenCookie).toBe('magpie_web_x=fresh')
@@ -136,7 +213,7 @@ describe('proxy behavior', () => {
     bridges.push(bridge)
     await expect(bridge.ensure()).rejects.toThrow(/启动链接.*webKey/)
     const proxy = await bridge.attachProxy({ host: '127.0.0.1', port: upstreamPort, cookie: 'stale=1' })
-    const response = await fetch(`http://127.0.0.1:${proxy.port}/`, { headers: { accept: 'text/html' } })
+    const response = await fetch(proxy.url, { headers: { accept: 'text/html' } })
     expect(response.status).toBe(401)
     const page = await response.text()
     expect(page).toContain('启动链接')
@@ -166,6 +243,8 @@ describe('proxy behavior', () => {
       headers: { 'sec-fetch-site': 'cross-site', accept: 'text/html' },
     })
     expect(response.status).toBe(403)
+    expect((await fetch(new URL('/', proxy.url))).status).toBe(403)
+    expect((await fetch(new URL('/api/state', proxy.url), { headers: { 'sec-fetch-site': 'same-site' } })).status).toBe(403)
     expect(reached).toBe(false)
   })
 
@@ -250,6 +329,10 @@ describe('proxy behavior', () => {
     const api = new URL(handle.url)
     api.pathname = '/api/state'
     expect((await navigate(api)).status).toBe(403)
+    const cookie = await session(handle.url)
+    const cleanApi = new URL('/api/state', handle.url)
+    expect((await fetch(cleanApi, { headers: { cookie, 'sec-fetch-site': 'same-site' } })).status).toBe(403)
+    expect(await (await fetch(cleanApi, { headers: { cookie, 'sec-fetch-site': 'same-origin' } })).text()).toBe('configured upstream')
   })
 
 })

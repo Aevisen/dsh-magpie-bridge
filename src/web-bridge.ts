@@ -125,7 +125,7 @@ export interface MagpieWebBridgeOptions {
 
 /** 已就绪的 Web 服务句柄。 */
 export interface MagpieWebHandle {
-  /** 代理完整 URL，可直接给 iframe 的 src（认证由代理注入，不含 ?k=）。 */
+  /** 带会话引导凭证的 iframe URL，不含 Magpie 的 Web 密钥。 */
   readonly url: string
   /** 代理端口。 */
   readonly port: number
@@ -197,10 +197,9 @@ export async function findFreePort(host: string, preferred: number, attempts: nu
   throw new Error(`端口 ${String(preferred)}–${String(preferred + attempts - 1)} 全部被占用`)
 }
 
-/** 浏览器明确标记为跨站的请求不能继承 Magpie 登录态。缺省头（测试与非浏览器客户端）放行。 */
-function isCrossSite(headers: { [key: string]: string | string[] | undefined }): boolean {
-  const site = headers['sec-fetch-site']
-  return (Array.isArray(site) ? site[0] : site) === 'cross-site'
+function matchesSecret(value: string, secret: Buffer): boolean {
+  const presented = Buffer.from(value)
+  return presented.length === secret.length && timingSafeEqual(presented, secret)
 }
 
 function toHeaderList(value: string | string[] | undefined): string[] {
@@ -208,11 +207,13 @@ function toHeaderList(value: string | string[] | undefined): string[] {
   return Array.isArray(value) ? value : [value]
 }
 
+const MAX_HTML_BYTES = 4 * 1024 * 1024
+
 /** 解码响应体（gzip/br/deflate）；未知编码抛错。 */
 function decodeBody(raw: Buffer, encoding: string): Buffer {
-  if (encoding === 'gzip' || encoding === 'x-gzip') return gunzipSync(raw)
-  if (encoding === 'br') return brotliDecompressSync(raw)
-  if (encoding === 'deflate') return inflateSync(raw)
+  if (encoding === 'gzip' || encoding === 'x-gzip') return gunzipSync(raw, { maxOutputLength: MAX_HTML_BYTES })
+  if (encoding === 'br') return brotliDecompressSync(raw, { maxOutputLength: MAX_HTML_BYTES })
+  if (encoding === 'deflate') return inflateSync(raw, { maxOutputLength: MAX_HTML_BYTES })
   throw new Error(`不支持的 content-encoding: ${encoding}`)
 }
 
@@ -448,42 +449,58 @@ async function startProxy(
   preferredPort: number,
   frameToken: string,
 ): Promise<{ server: Server; port: number }> {
+  const bootstrapSecret = Buffer.from(frameToken)
+  const sessionValue = randomBytes(32).toString('base64url')
+  const sessionSecret = Buffer.from(sessionValue)
+  const cookieName = `__Host-dsh-magpie-${randomBytes(8).toString('hex')}`
+  const cookiePrefix = `${cookieName}=`
+  let proxyOrigin: string
+
+  function hasSession(request: import('node:http').IncomingMessage): boolean {
+    const { headers } = request
+    // Cookie sites ignore ports. Reject sibling origins as well as cross-site callers.
+    const site = headers['sec-fetch-site']
+    if (site === 'cross-site' || site === 'same-site') return false
+    if (headers.origin !== undefined && headers.origin !== proxyOrigin) return false
+    return headers.cookie?.split(';').some((entry) => {
+      const cookie = entry.trim()
+      return cookie.startsWith(cookiePrefix) && matchesSecret(cookie.slice(cookiePrefix.length), sessionSecret)
+    }) ?? false
+  }
+
   const server = createHttpServer((request, response) => {
-    const path = URL.parse('http://127.0.0.1' + (request.url ?? '/'))
-    if (!path) {
+    const targetPath = request.url ?? '/'
+    const path = targetPath.startsWith('/') && !targetPath.startsWith('//')
+      ? URL.parse(targetPath, 'http://127.0.0.1')
+      : null
+    if (!path || path.origin !== 'http://127.0.0.1') {
       response.writeHead(400).end()
       return
     }
-    const presented = Buffer.from(path.searchParams.get('dshFrame') ?? '')
-    const expected = Buffer.from(frameToken)
-    const isAuthorizedFrame = request.method === 'GET' && path.pathname === '/'
-      && request.headers['sec-fetch-mode'] === 'navigate'
-      && ['iframe', 'frame'].includes(request.headers['sec-fetch-dest'] ?? '')
-      && presented.length === expected.length && timingSafeEqual(presented, expected)
-    if (isCrossSite(request.headers) && !isAuthorizedFrame) {
+    const bootstrap = request.method === 'GET' && path.pathname === '/' && !request.headers.origin
+      && matchesSecret(path.searchParams.get('dshFrame') ?? '', bootstrapSecret)
+    if (!bootstrap && !hasSession(request)) {
       response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
-      response.end('拒绝跨站请求')
+      response.end('Magpie 面板会话无效，请从 DSH 重新打开面板。')
       request.resume()
       return
     }
+    if (bootstrap) {
+      response.setHeader('cache-control', 'no-store')
+      response.setHeader('set-cookie', `${cookiePrefix}${sessionValue}; Path=/; HttpOnly; Secure; SameSite=None; Partitioned`)
+    }
+    response.setHeader('referrer-policy', 'no-referrer')
     const hasFrameToken = path.searchParams.has('dshFrame')
     path.searchParams.delete('dshFrame')
-    const upstreamPath = hasFrameToken ? path.pathname + path.search : request.url ?? '/'
-    const chunks: Buffer[] = []
-    request.on('data', (chunk: Buffer) => {
-      chunks.push(chunk)
-    })
-    request.on('error', () => {
-      if (!response.destroyed) response.destroy()
-    })
-    request.on('end', () => {
-      sendUpstream(Buffer.concat(chunks), true)
-    })
+    const upstreamPath = hasFrameToken ? path.pathname + path.search : targetPath
+    const panelNavigation = request.method === 'GET' && path.pathname === '/'
+      && (bootstrap || request.headers.accept?.includes('text/html'))
+      && !request.headers['content-length'] && !request.headers['transfer-encoding']
 
-    // 缓冲后转发：登录 cookie 失效（401）时重新登录并重放一次。
-    const sendUpstream = (body: Buffer, allowRetry: boolean): void => {
+    const sendUpstream = (allowRetry: boolean): void => {
       const target = getUpstream()
       if (target === undefined) {
+        request.resume()
         response.writeHead(503, {
           'content-type': 'text/html; charset=utf-8',
           'cache-control': 'no-store',
@@ -498,120 +515,135 @@ async function startProxy(
         if (value === undefined || DROPPED_REQUEST_HEADERS.has(name.toLowerCase())) continue
         headers[name] = value
       }
+      if (request.headers['content-length'] !== undefined) headers['content-length'] = request.headers['content-length']
       headers['host'] = `${target.host}:${String(target.port)}`
       headers['cookie'] = target.cookie
-      headers['content-length'] = String(body.length)
 
       const upstream = httpRequest(
-      {
-        host: target.host,
-        port: target.port,
-        path: upstreamPath,
-        method: request.method,
-        headers,
-      },
-      (upstreamResponse) => {
-        const isPanelNavigation = request.method === 'GET' && request.url?.split('?')[0] === '/'
-          && request.headers.accept?.includes('text/html')
-        if (upstreamResponse.statusCode === 401 && isPanelNavigation) {
-          upstreamResponse.resume()
-          const retry = allowRetry ? refresh() : Promise.resolve(false)
-          void retry.then((ok) => {
-            if (response.destroyed) return
-            if (ok) {
-              sendUpstream(body, false)
-              return
-            }
-            response.writeHead(401, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store',
-            })
-            response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Magpie Web 登录失败</title><main style="max-width:36rem;margin:3rem auto;padding:0 1.25rem;font:1rem/1.7 system-ui"><h1>Magpie Web 登录失败</h1><p>${WEB_KEY_GUIDE}</p></main></html>`)
-          })
-          return
-        }
-
-        const responseHeaders: Record<string, string | string[]> = {}
-        for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-          if (value === undefined || DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
-          responseHeaders[name] = value
-        }
-
-        const contentType = responseHeaders['content-type']
-        const isHtml =
-          typeof contentType === 'string' && contentType.toLowerCase().includes('text/html')
-
-        if (isHtml) {
-          responseHeaders['referrer-policy'] = 'no-referrer'
-          const chunks: Buffer[] = []
-          upstreamResponse.on('data', (chunk: Buffer) => {
-            chunks.push(chunk)
-          })
-          response.once('close', () => {
-            if (!response.writableEnded) {
-              upstreamResponse.destroy()
-              upstream.destroy()
-            }
-          })
-          upstreamResponse.once('error', () => {
-            if (!response.destroyed) {
-              response.writeHead(502)
-              response.end('magpie web 上游错误')
-            }
-          })
-          upstreamResponse.once('end', () => {
-            if (response.destroyed) return
-            let raw: Buffer = Buffer.concat(chunks)
-            const encoding = responseHeaders['content-encoding']
-            const algorithm = typeof encoding === 'string' ? encoding.toLowerCase().trim() : ''
-            let injectable = false
-            if (algorithm === '') {
-              injectable = true
-            } else if (algorithm === 'gzip' || algorithm === 'x-gzip' || algorithm === 'br' || algorithm === 'deflate') {
-              try {
-                raw = decodeBody(raw, algorithm)
-                delete responseHeaders['content-encoding']
-                injectable = true
-              } catch (error) {
-                logger.warn(
-                  `[magpie] 解压 HTML 失败（${algorithm}）：${error instanceof Error ? error.message : String(error)}`,
-                )
+        {
+          host: target.host,
+          port: target.port,
+          path: upstreamPath,
+          method: request.method,
+          headers,
+        },
+        (upstreamResponse) => {
+          if (upstreamResponse.statusCode === 401 && panelNavigation) {
+            upstreamResponse.resume()
+            const retry = allowRetry ? refresh() : Promise.resolve(false)
+            void retry.then((ok) => {
+              if (response.destroyed) return
+              if (ok) {
+                sendUpstream(false)
+                return
               }
-            }
-            if (injectable) {
-              const text = raw.toString('utf8')
-              const index = text.toLowerCase().lastIndexOf('</body>')
-              const next = index >= 0 ? `${text.slice(0, index)}${INJECTED_HTML_SCRIPT}${text.slice(index)}` : `${text}${INJECTED_HTML_SCRIPT}`
-              raw = Buffer.from(next, 'utf8')
-              responseHeaders['content-length'] = String(raw.length)
-            }
-            response.writeHead(upstreamResponse.statusCode ?? 200, responseHeaders)
-            response.end(raw)
-          })
-          return
-        }
+              response.writeHead(401, {
+                'content-type': 'text/html; charset=utf-8',
+                'cache-control': 'no-store',
+              })
+              response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Magpie Web 登录失败</title><main style="max-width:36rem;margin:3rem auto;padding:0 1.25rem;font:1rem/1.7 system-ui"><h1>Magpie Web 登录失败</h1><p>${WEB_KEY_GUIDE}</p></main></html>`)
+            })
+            return
+          }
 
-        response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders)
-        upstreamResponse.pipe(response)
-        upstreamResponse.once('error', () => response.destroy())
-      },
-    )
+          const responseHeaders: Record<string, string | string[]> = {}
+          for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+            if (value === undefined || DROPPED_RESPONSE_HEADERS.has(name.toLowerCase())) continue
+            responseHeaders[name] = value
+          }
 
-    upstream.once('error', () => {
-      if (!response.destroyed) {
-        response.writeHead(502)
-        response.end('magpie web 无响应')
+          if (bootstrap) responseHeaders['cache-control'] = 'no-store'
+          const contentType = responseHeaders['content-type']
+          const isHtml =
+            typeof contentType === 'string' && contentType.toLowerCase().includes('text/html')
+
+          if (isHtml) {
+            responseHeaders['referrer-policy'] = 'no-referrer'
+            responseHeaders['cache-control'] = 'no-store'
+            const chunks: Buffer[] = []
+            let bytes = 0
+            upstreamResponse.on('data', (chunk: Buffer) => {
+              bytes += chunk.length
+              if (bytes > MAX_HTML_BYTES) {
+                response.writeHead(502).end('Magpie 页面超过代理大小限制')
+                upstreamResponse.destroy()
+                return
+              }
+              chunks.push(chunk)
+            })
+            response.once('close', () => {
+              if (!response.writableEnded) {
+                upstreamResponse.destroy()
+                upstream.destroy()
+              }
+            })
+            upstreamResponse.once('error', () => {
+              if (!response.destroyed && !response.headersSent) {
+                response.writeHead(502)
+                response.end('magpie web 上游错误')
+              }
+            })
+            upstreamResponse.once('end', () => {
+              if (response.destroyed || response.writableEnded) return
+              let raw: Buffer = Buffer.concat(chunks)
+              const encoding = responseHeaders['content-encoding']
+              const algorithm = typeof encoding === 'string' ? encoding.toLowerCase().trim() : ''
+              let injectable = false
+              if (algorithm === '') {
+                injectable = true
+              } else if (algorithm === 'gzip' || algorithm === 'x-gzip' || algorithm === 'br' || algorithm === 'deflate') {
+                try {
+                  raw = decodeBody(raw, algorithm)
+                  delete responseHeaders['content-encoding']
+                  injectable = true
+                } catch (error) {
+                  logger.warn(
+                    `[magpie] 解压 HTML 失败（${algorithm}）：${error instanceof Error ? error.message : String(error)}`,
+                  )
+                }
+              }
+              if (injectable) {
+                const text = raw.toString('utf8')
+                const index = text.toLowerCase().lastIndexOf('</body>')
+                const next = index >= 0 ? `${text.slice(0, index)}${INJECTED_HTML_SCRIPT}${text.slice(index)}` : `${text}${INJECTED_HTML_SCRIPT}`
+                raw = Buffer.from(next, 'utf8')
+                responseHeaders['content-length'] = String(raw.length)
+              }
+              response.writeHead(upstreamResponse.statusCode ?? 200, responseHeaders)
+              response.end(raw)
+            })
+            return
+          }
+
+          response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders)
+          upstreamResponse.pipe(response)
+          upstreamResponse.once('error', () => response.destroy())
+        },
+      )
+
+      upstream.once('error', () => {
+        if (response.destroyed || response.writableEnded) return
+        if (response.headersSent) response.destroy()
+        else response.writeHead(502).end('magpie web 无响应')
+      })
+      response.once('close', () => {
+        if (!response.writableEnded) upstream.destroy()
+      })
+      if (panelNavigation) {
+        request.resume()
+        upstream.end()
+      } else {
+        request.once('error', () => upstream.destroy())
+        request.pipe(upstream)
       }
-    })
-    // 转发缓冲好的请求体（GET 时为空）。
-    upstream.end(body)
     }
+    sendUpstream(true)
   })
 
   // WebSocket 升级：手工拼 101 响应行后双向 pipe（magpie 的实时通道）。
   server.on('upgrade', (request, socket, head) => {
-    if (isCrossSite(request.headers)) {
-      socket.destroy()
+    if (!hasSession(request)) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
       return
     }
     const target = getUpstream()
@@ -645,6 +677,7 @@ async function startProxy(
       socket.write(`${lines.join('\r\n')}\r\n\r\n`)
       if (upstreamHead.length > 0) socket.write(Buffer.from(upstreamHead))
       upstreamSocket.pipe(socket)
+      if (head.length > 0) upstreamSocket.write(head)
       socket.pipe(upstreamSocket)
       upstreamSocket.once('error', () => socket.destroy())
       socket.once('error', () => upstreamSocket.destroy())
@@ -663,7 +696,6 @@ async function startProxy(
     })
     upstream.on('error', () => socket.destroy())
     // 客户端在握手前可能已发数据（head），先写回去再结束请求。
-    if (head.length > 0) upstream.write(Buffer.from(head))
     upstream.end()
   })
 
@@ -686,6 +718,7 @@ async function startProxy(
     logger.warn(`[magpie] 代理服务器错误：${error.message}`)
   })
   logger.debug(`[magpie] 代理监听 ${listenHost}:${String(port)}`)
+  proxyOrigin = mainWindowUrl(listenHost, port).slice(0, -1)
   return { server, port }
 }
 
@@ -751,10 +784,10 @@ export class MagpieWebBridge {
    * 只起代理并接上给定上游（测试用）：不 spawn magpie 进程。
    * @returns 代理实际监听的地址。
    */
-  async attachProxy(upstream: { host: string; port: number; cookie: string }): Promise<{ port: number }> {
+  async attachProxy(upstream: { host: string; port: number; cookie: string }): Promise<{ port: number; url: string }> {
     this.upstream = upstream
     const { port } = await this.ensureProxy()
-    return { port }
+    return { port, url: this.frameUrl(port) }
   }
 
   /** 停掉子进程与代理（同步、不抛错）。 */

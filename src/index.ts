@@ -135,7 +135,9 @@ function registerPanelRpc(
         if (call?.type !== 'client-request' || typeof call.rpcId !== 'string' || call.method !== endpoint) {
           return new Response('Invalid RPC request', { status: 400 })
         }
-        return Response.json({ type: 'server-response', rpcId: call.rpcId, result: withDetails(await handler(method)) })
+        return Response.json({ type: 'server-response', rpcId: call.rpcId, result: withDetails(await handler(method)) }, {
+          headers: { 'cache-control': 'no-store' },
+        })
       },
     })
   }
