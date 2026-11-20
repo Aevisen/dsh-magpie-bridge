@@ -1,0 +1,14 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="dshm-body" x1="7" y1="10" x2="29" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5B8CFF"/>
+      <stop offset="1" stop-color="#2E4BD6"/>
+    </linearGradient>
+    <linearGradient id="dshm-wing" x1="8" y1="8" x2="20" y2="22" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3EE0A0"/>
+      <stop offset="1" stop-color="#0E8F8A"/>
+    </linearGradient>
+  </defs>
+  <path d="M9 27c6-1 9.5-4 12-9.5l5-6.5-5 1.5c-2.5-2.5-7-2.5-9.5 0-2.5 2.5-3.5 7-2.5 14.5z" fill="url(#dshm-body)"/>
+  <path d="M9.5 27c4.5-1.5 6.5-4 7-7.5-3 1.5-6 2-7 7.5z" fill="url(#dshm-wing)"/>
+</svg>

@@ -81,6 +81,37 @@ npm run build        # tsc + 客户端 esbuild → lib/
 
 本地目录安装不跑 `prepare`，安装前必须先 `npm run build`。
 
+## 发布到 DSH 插件市场
+
+DSH 的 Discover 页没有中央仓库：它读用户在 `plugin-market.indexes` 里配置的**索引 URL**。所以发布分两步——发 npm 包，再托管一份索引。
+
+### 1. 发布 npm 包
+
+```sh
+npm run build
+npm pack --dry-run        # 确认 lib/、cordis.patch.yml、locale/、docs/、icon.svg 都在
+npm publish               # 需要 npm 登录；包名 dsh-magpie-bridge
+```
+
+### 2. 生成并托管索引
+
+```sh
+MARKET_INDEX_URL=https://<你的域名>/dsh-magpie/market/index.json \
+  ELECTRON_RUN_AS_NODE=1 "$DSH_NODE_EXECUTABLE" node scripts/make-market-index.mjs
+```
+
+脚本从 `package.json` 读取名称与版本，写出 `market/index.json`，并把 `icon.svg` 复制到同目录。索引用官方 `@deepseek-ai/dsh-plugin-market-index` 校验（必须用 DSH 的 Electron 运行时，普通 Node 读不到 app.asar）。
+
+把 `market/index.json` 与 `market/icon.svg` 放到任意静态地址（GitHub Pages、对象存储、你自己的域名）。
+
+### 3. 让用户装
+
+在 DSH 设置里把索引 URL 加到 `plugin-market.indexes`，Discover 页就会出现本插件；安装走 `pluginManager.installBundle`。
+
+### 版本更新
+
+每次发布新版本：`npm version <patch|minor|major>` → `npm publish` → 重跑第 2 步（索引里的 `version` 与 `publishTimestamp` 会更新）。索引按 SemVer 降序列出多个版本，用户装的是 `defaultVersion`。
+
 ## 致谢
 
 反向代理与进程桥的设计蓝本是 [Betsy20/dsh-magpie](https://github.com/Betsy20/dsh-magpie)（MIT），见 `NOTICE`。

@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "title": {
+    "en": "Magpie bridge market",
+    "zh": "Magpie 桥插件市场"
+  },
+  "description": {
+    "en": "dsh-magpie-bridge index",
+    "zh": "dsh-magpie-bridge 索引"
+  },
+  "metadata": {
+    "categories": {
+      "integration": {
+        "title": {
+          "en": "Integration",
+          "zh": "集成"
+        }
+      }
+    },
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-magpie-bridge",
+      "title": {
+        "en": "Magpie bridge",
+        "zh": "Magpie 桥"
+      },
+      "description": {
+        "en": "把 [magpie](https://github.com/yetone/magpie) 的原版 Web UI 嵌进 DeepSeek Harness，并给 agent 提供 magpie 的 CLI 工具。",
+        "zh": "把 [magpie](https://github.com/yetone/magpie) 的原版 Web UI 嵌进 DeepSeek Harness，并给 agent 提供 magpie 的 CLI 工具。"
+      },
+      "icon": "https://example.com/dsh-magpie/market/icon.svg",
+      "metadata": {
+        "category": "integration",
+        "keywords": [
+          "deepseek-harness",
+          "dsh",
+          "dsh-plugin",
+          "magpie",
+          "llm",
+          "openai-compatible"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1795144974,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {}
+        }
+      ]
+    }
+  ]
+}
